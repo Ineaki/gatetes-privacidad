@@ -19,8 +19,11 @@ export class Store {
         before_hash TEXT, after_hash TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, task TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, task TEXT, file TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS exported_reports(id TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS report_search USING fts5(id UNINDEXED, task UNINDEXED, body);
       CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, task TEXT, body TEXT NOT NULL, created INTEGER NOT NULL);`);
+    // One startup reconciliation handles deleted Markdown exports; idle ticks are incremental.
+    for(const r of this.db.prepare('SELECT id,file FROM reports').all()) if(!fs.existsSync(r.file)) this.db.prepare('DELETE FROM exported_reports WHERE id=?').run(r.id);
     this.flushReports();
   }
   close() { this.db.close(); }
@@ -37,6 +40,7 @@ export class Store {
         return this.get(old.id);
       }
       const id = randomUUID(), now = Date.now();
+      for(const dep of spec.dependencies??[]) if(!this.get(dep)) throw Error('Dependency must already exist');
       this.db.prepare("INSERT INTO tasks(id,key,spec,state,created,updated) VALUES(?,?,?,'queued',?,?)").run(id,key,JSON.stringify(spec),now,now);
       this.event(id,'submitted',{ profile: spec.profile }); return this.get(id);
     });
@@ -53,8 +57,15 @@ export class Store {
       const lock = this.db.prepare('SELECT * FROM worker WHERE id=1').get();
       if (lock && lock.lease > now && lock.owner !== owner) return null;
       this.db.prepare('INSERT INTO worker VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,lease=excluded.lease').run(owner,now+this.c.leaseMs);
-      this.db.prepare("UPDATE tasks SET state='queued',owner=NULL WHERE state='running' AND lease<=?").run(now);
-      const row = this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created LIMIT 1").get();
+      this.db.prepare("UPDATE tasks SET state='queued',owner=NULL,elapsed=elapsed+max(0,lease-updated),updated=? WHERE state='running' AND lease<=?").run(now,now);
+      const row = this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created").all().find(t=>{
+        const deps=(JSON.parse(t.spec).dependencies??[]).map(id=>this.get(id));
+        if(deps.some(d=>!d||['failed','cancelled','blocked'].includes(d.state))) {
+          this.db.prepare("UPDATE tasks SET state='blocked',result=?,updated=? WHERE id=?").run(JSON.stringify({error:'dependency not completed; explicit resume required'}),now,t.id);
+          this.addReport(t.id,{status:'blocked',reason:'dependency not completed'});return false;
+        }
+        return deps.every(d=>d.state==='completed');
+      });
       if (!row) { this.db.prepare('DELETE FROM worker WHERE owner=?').run(owner); return null; }
       if (row.attempts >= this.c.maxAttempts) {
         this.db.prepare("UPDATE tasks SET state='failed',result=?,updated=? WHERE id=?").run(JSON.stringify({error:'attempt limit'}),now,row.id);
@@ -84,7 +95,8 @@ export class Store {
   finish(task,state,result) {
     this.tx(() => {
       this.assert(task);
-      this.addReport(task.id,{ status:state, result, checkpoint:this.get(task.id).checkpoint });
+      this.addReport(task.id,{ status:state, task:{goal:task.spec.goal,profile:task.spec.profile,files:task.spec.files}, result, checkpoint:this.get(task.id).checkpoint,
+        activities:this.db.prepare('SELECT kind,body,created FROM events WHERE task=? ORDER BY created').all(task.id).map(e=>({...e,body:JSON.parse(e.body)})), calls:this.metrics(task.id) });
       this.db.prepare('UPDATE tasks SET state=?,result=?,owner=NULL,lease=NULL,updated=? WHERE id=?').run(state,JSON.stringify(result),Date.now(),task.id);
       this.db.prepare('DELETE FROM worker WHERE owner=?').run(task.owner);
     });
@@ -107,11 +119,12 @@ export class Store {
     this.db.prepare('INSERT INTO report_search VALUES(?,?,?)').run(id,task,text);
   }
   flushReports() {
-    for (const r of this.db.prepare('SELECT * FROM reports').all()) {
+    for (const r of this.db.prepare('SELECT * FROM reports WHERE id NOT IN (SELECT id FROM exported_reports)').all()) {
       if (!fs.existsSync(r.file)) {
         const body=`# Activity ${r.id}\n\nTask: ${r.task}\nDate: ${new Date(r.created).toISOString()}\n\n\`\`\`json\n${r.body}\n\`\`\`\n`;
         fs.writeFileSync(r.file,body,{flag:'wx',mode:0o600});
       }
+      this.db.prepare('INSERT OR IGNORE INTO exported_reports VALUES(?)').run(r.id);
     }
   }
   search(query, task = null, limit = 3) {
@@ -122,4 +135,23 @@ export class Store {
   }
   metric(task,body) { this.db.prepare('INSERT INTO calls VALUES(?,?,?,?)').run(randomUUID(),task,JSON.stringify(body),Date.now()); }
   metrics(task) { return this.db.prepare('SELECT body FROM calls WHERE task=?').all(task).map(r=>JSON.parse(r.body)); }
+  memory(query,root,allowed) {
+    return this.search(query).filter(hit=>{
+      const r=this.db.prepare('SELECT body FROM reports WHERE id=?').get(hit.id);
+      const hashes=JSON.parse(r.body).checkpoint?.hashes;
+      if(!hashes||!Object.keys(hashes).length) return false;
+      for(const [file,expected] of Object.entries(hashes)) {
+        if(!allowed.includes(file)) return false;
+        // Worktree path validation happens at every actual file access in worker/workspace.
+        const target=path.resolve(root,file);
+        if(!target.startsWith(path.resolve(root)+path.sep)) return false;
+        let cursor=path.resolve(root);
+        for(const part of file.split('/')) {cursor=path.join(cursor,part);if(fs.existsSync(cursor)&&fs.lstatSync(cursor).isSymbolicLink()) return false;}
+        if(fs.existsSync(target)&&fs.statSync(target).size>1024*1024) return false;
+        const actual=fs.existsSync(target)?hash(fs.readFileSync(target)):null;
+        if(expected!==actual) return false;
+      }
+      return true;
+    });
+  }
 }

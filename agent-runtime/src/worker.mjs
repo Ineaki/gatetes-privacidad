@@ -34,13 +34,17 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   try {
     guard(); root=taskWorkspace(c,task); reconcile(store,task,root); checkpoint();
     const tools=toolsFor(task.spec.profile);
-    const memory=store.search(task.spec.goal);
+    const memory=store.memory(task.spec.goal,root,task.spec.files);
     while(steps<c.maxSteps) {
       guard(); task.checkpoint=store.get(task.id).checkpoint;
       const context=buildContext(c,task,tools,memory,history);
       const requestStart=Date.now();
-      const response=await chat(c,{model:c.model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0}},combined);
-      guard(); steps++;
+      steps++; checkpoint(); // Failed/aborted requests still consume a step.
+      let response;
+      try {
+        response=await chat(c,{model:c.model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}},combined);
+      }catch(e){store.metric(task.id,{run_id:owner,model:c.model,estimated_input:context.estimatedInput,input_tokens:null,output_tokens:null,duration_ms:Date.now()-requestStart,error:String(e.message).slice(0,300),cloud:false});throw e;}
+      guard();
       store.metric(task.id,{run_id:owner,model:c.model,estimated_input:context.estimatedInput,estimate_method:context.estimateMethod,
         input_tokens:response.prompt_eval_count??null,output_tokens:response.eval_count??null,duration_ms:Date.now()-requestStart,retrieved:context.retrieved,cloud:false});
       const msg=response.message;
@@ -50,10 +54,20 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
       if(msg.tool_calls?.length) clean.tool_calls=msg.tool_calls;
       if(response.done_reason==='length') throw Error('Output limit reached; task needs splitting');
       if(!clean.tool_calls?.length) {
+        if(!clean.content.trim()) throw Error('Empty model result');
         const assertions=verify(root,task.spec);
+        const checks=[];
+        for(const p of task.spec.files.filter(p=>/\.(mjs|cjs|js)$/.test(p))) {
+          const changed=store.db.prepare("SELECT 1 FROM operations WHERE task=? AND file=? AND state='done' LIMIT 1").get(task.id,p);
+          if(changed) {
+            guard();
+            try {checks.push(checkSyntax(root,task.spec,{path:p}));}
+            catch(e){checks.push({path:p,passed:false,error:String(e.message).slice(0,1500)});}
+          }
+        }
         checkpoint();
-        const passed=assertions.every(a=>a.passed);
-        const result={summary:clean.content,assertions,acceptance:assertions.length?'assertions_only':'human_review_required',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:c.model,metrics:store.metrics(task.id)};
+        const passed=assertions.every(a=>a.passed)&&checks.every(a=>a.passed);
+        const result={summary:clean.content,summary_source:'unverified_model_statement',assertions,checks,acceptance:assertions.length?'assertions_only':'human_review_required',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:c.model,metrics:store.metrics(task.id)};
         store.finish(task,passed?'completed':'blocked',result);
         return store.get(task.id);
       }
@@ -68,6 +82,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
           else if(f.name==='check_syntax') result=checkSyntax(root,task.spec,f.arguments);
         } catch(e) { result={error:String(e.message).slice(0,1000)}; }
         last={tool:f?.name,result};
+        store.event(task.id,'tool',{run_id:owner,generation:task.generation,profile:task.spec.profile,name:f?.name,path:f?.arguments?.path,hash:result?.hash,passed:result?.passed,error:result?.error});
         history.push({role:'tool',tool_name:f?.name??'invalid',content:JSON.stringify(result)});
         checkpoint();
         const recent=history.filter(m=>m.role==='tool').slice(-3);

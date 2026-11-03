@@ -34,7 +34,8 @@ try {
       else if(command==='run-once') value=await runOne(store,c);
       else if(command==='metrics') value=store.metrics(args[0]);
       else if(command==='search') value=store.search(args.join(' '));
-      else if(['status','cancel','resume','list'].includes(command)) value=dispatch(store,command,{id:args[0]},'admin');
+      else if(command==='status') value=dispatch(store,'status',{id:args[0]},'admin');
+      else if(['cancel','resume','list'].includes(command)) value=dispatch(store,command,{id:args[0]},'admin');
       else throw Error('Unknown command; use help');
       console.log(JSON.stringify(value,null,2));store.close();
     }

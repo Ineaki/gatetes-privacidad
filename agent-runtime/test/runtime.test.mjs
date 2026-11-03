@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.mjs';
 import { Store,hash } from '../src/store.mjs';
 import { validateSpec,safeFile,taskWorkspace,writeFile,reconcile,readFile } from '../src/workspace.mjs';
@@ -139,4 +140,42 @@ test('authenticated gateway rejects anonymous and browser-origin requests',async
     assert.equal(response.status,200);assert.equal((await response.json()).result.state,'queued');
     assert.equal((await fetch(url,{method:'POST',headers,body:JSON.stringify({action:'resume',args:{id:'x'}})})).status,400);
   }finally{await new Promise(r=>server.close(r));}
+});
+test('dependent tasks wait and missing dependencies are rejected',t=>{
+  const {s}=fixture(t);const parent=s.submit(spec());
+  const child=s.submit(spec({dependencies:[parent.id]}));
+  const running=s.acquire('a');assert.equal(running.id,parent.id);
+  s.finish(running,'completed',{summary:'verified'});
+  assert.equal(s.acquire('b').id,child.id);
+  assert.throws(()=>s.submit(spec({dependencies:['00000000-0000-0000-0000-000000000000']})),/already exist/);
+});
+test('changed file invalidates previous report before context injection',t=>{
+  const {s,repo}=fixture(t);const file='input.txt';
+  s.addReport('old',{summary:'greeting quartz',checkpoint:{hashes:{[file]:hash('original')}}});
+  assert.equal(s.memory('quartz',repo,[file]).length,1);
+  fs.writeFileSync(path.join(repo,file),'changed');
+  assert.equal(s.memory('quartz',repo,[file]).length,0);
+});
+test('failed inference counts step and records unavailable usage',async t=>{
+  const {s,c}=fixture(t);s.submit(spec());
+  const result=await runOne(s,c,{chat:async()=>{throw Error('Ollama unavailable');}});
+  assert.equal(result.steps,1);assert.equal(s.metrics(result.id)[0].input_tokens,null);
+});
+test('independent syntax validation catches invalid code despite model success claim',async t=>{
+  const {s,c}=fixture(t);s.submit(spec());let call=0;
+  const result=await runOne(s,c,{chat:async()=>({message:call++===0?{tool_calls:[{function:{name:'write_file',arguments:{path:'hello.mjs',expected_hash:null,text:'export const = ;'}}}]}:{content:'Syntax is valid, all done.'}})});
+  assert.equal(result.state,'blocked');assert.equal(result.result.checks[0].passed,false);
+});
+test('MCP stdio initializes and submits without inheriting conversation history',t=>{
+  const {c,s}=fixture(t);
+  const cli=fileURLToPath(new URL('../src/cli.mjs',import.meta.url));
+  const messages=[{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05'}},
+    {jsonrpc:'2.0',id:2,method:'tools/list'},
+    {jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'tasks_submit',arguments:{key:'mcp-test',task:spec()}}}];
+  const output=execFileSync(process.execPath,[cli,'mcp'],{encoding:'utf8',input:messages.map(x=>JSON.stringify(x)).join('\n')+'\n',windowsHide:true,env:{...process.env,AGENT_REPO:c.repo,AGENT_VAULT:c.vault}});
+  const responses=output.trim().split('\n').map(x=>JSON.parse(x));
+  assert.equal(responses[0].result.serverInfo.name,'gatetes-local-agents');
+  assert.equal(responses[1].result.tools.length,4);
+  const submitted=JSON.parse(responses[2].result.content[0].text);
+  assert.equal(s.get(submitted.id).state,'queued');assert.equal(submitted.owner,undefined);
 });

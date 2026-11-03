@@ -5,7 +5,7 @@ import { hash } from './store.mjs';
 
 const forbidden = /(^|\/)(\.git|\.env[^/]*|node_modules|vault|logs|worktrees|credentials[^/]*|[^/]*\.(?:pem|key|token|sqlite[^/]*))($|\/)/i;
 export function validPath(p) {
-  if (typeof p!=='string' || !p || p.length>240 || p.includes('\\') || p.includes(':') || p.includes('\0') || path.isAbsolute(p) || p.split('/').some(x=>x==='..'||x==='.'||!x) || forbidden.test(p)) throw Error('Forbidden file path');
+  if (typeof p!=='string' || !p || p.length>240 || p.includes('\\') || p.includes(':') || /[\x00-\x1f<>"|?*]/.test(p) || path.isAbsolute(p) || p.split('/').some(x=>x==='..'||x==='.'||!x||/[. ]$/.test(x)||/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(x)) || forbidden.test(p)) throw Error('Forbidden file path');
   return p;
 }
 export function validateSpec(input) {
@@ -15,10 +15,12 @@ export function validateSpec(input) {
   if (!['coder','researcher','reviewer'].includes(profile)) throw Error('Invalid profile');
   if (!Array.isArray(input.files)||input.files.length>20) throw Error('Explicit files required (max 20)');
   const files=[...new Set(input.files.map(validPath))].sort();
+  const dependencies=input.dependencies??[];
+  if(!Array.isArray(dependencies)||dependencies.length>10||dependencies.some(x=>typeof x!=='string'||!/^[a-f0-9-]{36}$/.test(x))) throw Error('Invalid dependencies');
   const acceptance=input.acceptance??[];
   if (!Array.isArray(acceptance)||acceptance.length>10) throw Error('Invalid acceptance');
   for (const a of acceptance) if (!files.includes(a.path)||typeof a.contains!=='string'||!a.contains||a.contains.length>2000) throw Error('Invalid acceptance assertion');
-  return { goal:input.goal, profile, files, acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), origin:String(input.origin??'local').slice(0,80) };
+  return { goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), origin:String(input.origin??'local').slice(0,80) };
 }
 export function safeFile(root, relative, allowed) {
   validPath(relative);
@@ -44,7 +46,11 @@ export function taskWorkspace(c,task) {
   if (git(root,['rev-parse','--show-toplevel']).replaceAll('\\','/').toLowerCase()!==root.replaceAll('\\','/').toLowerCase()) throw Error('Wrong worktree');
   return root;
 }
-export function fileHash(file) { return fs.existsSync(file)?hash(fs.readFileSync(file)):null; }
+export function fileHash(file) {
+  if(!fs.existsSync(file)) return null;
+  if(fs.statSync(file).size>1024*1024) throw Error('File too large; split task');
+  return hash(fs.readFileSync(file));
+}
 export function reconcile(store,task,root) {
   for (const op of store.db.prepare("SELECT * FROM operations WHERE task=? AND state='pending'").all(task.id)) {
     const file=safeFile(root,op.file,task.spec.files), current=fileHash(file);
@@ -74,7 +80,7 @@ export function writeFile(store,task,root,args) {
     if (previous?.state==='done' && fileHash(file)===after) return {path:args.path,hash:after,replayed:true};
     if (fileHash(file)!==args.expected_hash) throw Error('File changed; reread before writing');
     store.db.prepare("INSERT INTO operations VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(id) DO UPDATE SET state='pending'").run(id,task.id,args.path,args.expected_hash,after,args.text);
-    // Commit intent before touching disk. SQLite transaction stays open only for the synchronous atomic replace below.
+    // This transaction commits the intent before the second transaction touches disk.
     return {id,file,after};
   }).id ? applyIntent(store,task,root,id) : {path:args.path,hash:after,replayed:true};
 }
@@ -86,7 +92,7 @@ function applyIntent(store,task,root,id) {
     if (fileHash(file)!==op.before_hash) throw Error('File changed before replacement');
     fs.mkdirSync(path.dirname(file),{recursive:true});
     const temp=file+`.${id}.tmp`;
-    fs.writeFileSync(temp,op.body,{mode:0o600});
+    fs.writeFileSync(temp,op.body,{mode:0o600,flush:true});
     fs.renameSync(temp,file);
     store.db.prepare("UPDATE operations SET state='done' WHERE id=?").run(id);
     store.event(task.id,'write',{path:op.file,before:op.before_hash,after:op.after_hash});

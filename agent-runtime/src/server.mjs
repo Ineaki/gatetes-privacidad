@@ -12,9 +12,9 @@ export function credentials(c) {
 }
 function equal(a,b) { const x=Buffer.from(a),y=Buffer.from(b); return x.length===y.length&&timingSafeEqual(x,y); }
 export function dispatch(store,action,args={},role='delegate') {
-  if(action==='submit') return store.submit(validateSpec(args.task),args.key);
-  if(action==='status') { if(typeof args.id!=='string') throw Error('Task id required'); const t=store.get(args.id); if(!t) throw Error('Unknown task'); return t; }
-  if(action==='cancel') { store.cancel(args.id); return store.get(args.id); }
+  if(action==='submit') return compactTask(store.submit(validateSpec(args.task),args.key));
+  if(action==='status') { if(typeof args.id!=='string') throw Error('Task id required'); const t=store.get(args.id); if(!t) throw Error('Unknown task'); return compactTask(t); }
+  if(action==='cancel') { store.cancel(args.id); return compactTask(store.get(args.id)); }
   if(action==='search') return store.search(String(args.query??''),args.task??null);
   if(role==='admin'&&action==='list') return store.list();
   if(role==='admin'&&action==='resume') {
@@ -26,6 +26,12 @@ export function dispatch(store,action,args={},role='delegate') {
     });
   }
   throw Error('Action forbidden');
+}
+export function compactTask(t) {
+  return {id:t.id,state:t.state,profile:t.spec.profile,steps:t.steps,attempts:t.attempts,
+    checkpoint:{branch:t.checkpoint.branch,hashes:t.checkpoint.hashes,next:t.checkpoint.next},
+    result:t.result?{summary:t.result.summary?.slice(0,2000),summary_source:t.result.summary_source,error:t.result.error,assertions:t.result.assertions,checks:t.result.checks,
+      acceptance:t.result.acceptance,workspace:t.result.workspace,branch:t.result.branch}:null};
 }
 export function makeServer(store,c) {
   const keys=credentials(c);
@@ -41,6 +47,10 @@ export function makeServer(store,c) {
       let bytes=0; const chunks=[];
       for await(const chunk of req) {bytes+=chunk.length;if(bytes>24000) throw Error('Request too large'); chunks.push(chunk);}
       const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if(body.action==='shutdown') {
+        if(role!=='admin') throw Error('Action forbidden');
+        send(200,{result:'Stopping after checkpoint'});setImmediate(()=>server.emit('shutdown'));return;
+      }
       const result=dispatch(store,body.action,body.args,role);
       send(200,{result});
     }catch(e){send(400,{error:String(e.message).slice(0,1000)});}
@@ -54,10 +64,12 @@ export async function serve(store,c) {
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(c.port,'127.0.0.1',resolve);});
   console.log(`Local agent gateway listening on 127.0.0.1:${c.port}; credentials remain in private vault.`);
   let current=null;
-  const tick=()=>{if(!current&&!controller.signal.aborted) current=runOne(store,c,{signal:controller.signal}).finally(()=>{current=null;});};
+  const tick=()=>{if(!current&&!controller.signal.aborted) current=runOne(store,c,{signal:controller.signal}).catch(e=>console.error('Worker scheduling error:',e.message)).finally(()=>{current=null;});};
   // Timer only checks SQLite; no model is called while idle.
   const timer=setInterval(tick,1000);tick();
-  const stop=async()=>{clearInterval(timer);controller.abort();server.close();await current;store.close();};
+  let stopped=false;
+  const stop=async()=>{if(stopped)return;stopped=true;clearInterval(timer);controller.abort();server.close();await current;store.close();};
+  server.once('shutdown',stop);
   process.once('SIGINT',stop);process.once('SIGTERM',stop);
   return {server,stop};
 }

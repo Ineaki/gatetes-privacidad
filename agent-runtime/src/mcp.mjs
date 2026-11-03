@@ -22,7 +22,7 @@ export function mcp(store) {
       else if(request.method==='tools/call') {
         const routes={tasks_submit:'submit',tasks_status:'status',tasks_cancel:'cancel',memory_search:'search'};
         const action=routes[request.params?.name];if(!action) throw Error('Unknown tool');
-        const data=dispatch(store,action,request.params.arguments,'delegate');
+        const data=dispatch(store,action,request.params.arguments??{},'delegate');
         result={content:[{type:'text',text:JSON.stringify(data)}],isError:false};
       }else throw Error('Unsupported method');
       process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result})+'\n');
