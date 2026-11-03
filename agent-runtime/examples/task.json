@@ -1,0 +1,7 @@
+{
+  "goal": "Create agent-runtime/examples/hello.mjs exporting function greet(name) that returns Hola followed by a space and the name. Read the file first; if missing use expected_hash null. Check JavaScript syntax. Finish with the checks performed.",
+  "profile": "coder",
+  "files": ["agent-runtime/examples/hello.mjs"],
+  "acceptance": [{"path":"agent-runtime/examples/hello.mjs","contains":"export function greet"}],
+  "origin": "synthetic-smoke-test"
+}

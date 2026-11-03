@@ -1,0 +1,8 @@
+*.sqlite*
+.env*
+config.local.json
+vault/
+logs/
+worktrees/
+node_modules/
+*.token
