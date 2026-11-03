@@ -39,7 +39,7 @@ directory is for human-maintained decisions; it is not injected wholesale.
 Use `settings.json` for validated options, for example:
 
 ```json
-{"model":"qwen2.5:3b","context":8192,"output":1536,"cpuOnly":true,"requestMs":180000}
+{"model":"qwen2.5:3b","context":8192,"output":1536,"cpuOnly":false,"requestMs":180000}
 ```
 
 The first machine tested has a CUDA kernel-load error with its current driver;
