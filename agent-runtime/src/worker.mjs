@@ -4,6 +4,7 @@ import path from 'node:path';
 import { buildContext } from './context.mjs';
 import { taskWorkspace, reconcile, readFile, writeFile, checkSyntax, verify, fileHash, safeFile } from './workspace.mjs';
 import { simulatedToolCall, machineLock, sha } from './guard.mjs';
+import { runOrqTask, orqSettings, ORQ_ENGINES } from './orq.mjs';
 import { reviewProfiles, reviewSchema, reviewMessages, correction, buildEvidence, assessReview, runTests, reviewMarkdown } from './review.mjs';
 
 const tool=(name,description,properties,required)=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
@@ -34,11 +35,12 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   if(!task) { unlock(); return null; }
   const controller=new AbortController(), combined=AbortSignal.any([signal,controller.signal]);
   const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null, reprompted=task.checkpoint.reprompted??false;
+  const isOrq=ORQ_ENGINES.includes(task.spec.engine), maxSeconds=isOrq?orqSettings(c).maxSeconds:c.maxSeconds;
   const elapsed=()=>task.elapsed+Date.now()-started;
-  const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=c.maxSeconds*1000) throw Error('Task time limit'); };
+  const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=maxSeconds*1000) throw Error('Task time limit'); };
   const heartbeat=setInterval(()=>{try{store.heartbeat(task);}catch{controller.abort();}},Math.max(50,Math.floor(c.leaseMs/3)));
   const cancelWatch=setInterval(()=>{if(store.get(task.id)?.state!=='running') controller.abort();},200);
-  const deadline=setTimeout(()=>controller.abort(),Math.max(1,c.maxSeconds*1000-task.elapsed));
+  const deadline=setTimeout(()=>controller.abort(),Math.max(1,maxSeconds*1000-task.elapsed));
   const checkpoint=()=>store.checkpoint(task,{ workspace:root, branch:`agent/task-${task.id}`, last:compactLast(last), reprompted,
     hashes:root?Object.fromEntries(task.spec.files.map(p=>{try{return [p,fileHash(safeFile(root,p,task.spec.files))];}catch{return [p,'unavailable'];}})):{}, next:'Resume from current files; do not repeat verified operations.' },steps,elapsed());
   // Every model call is kept whole in the private vault; only a digest goes into events.
@@ -57,6 +59,13 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     return response;
   };
   try {
+    if(isOrq) {
+      // Claude/Codex vía orq: el proceso corre en segundo plano y el lease se mantiene con el heartbeat.
+      let orqData={};
+      const done=await runOrqTask(store,c,task,{guard,signal:combined,setRoot:r=>{root=r;},checkpoint:data=>{orqData=data;store.checkpoint(task,{workspace:root,branch:`orq/${task.spec.key}`,...data},steps,elapsed());}});
+      store.finish(task,done.state,{...done.result,steps,elapsed_ms:elapsed()});
+      return store.get(task.id);
+    }
     guard(); root=taskWorkspace(c,task); reconcile(store,task,root); checkpoint();
     if(reviewProfiles.includes(task.spec.profile)) return await review();
     const tools=toolsFor(task.spec.profile);
