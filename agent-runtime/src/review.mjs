@@ -143,8 +143,11 @@ export function assessReview(root, spec, content) {
       if (norm(a.evidence).length < 15) reasons.push('criterion without evidence');
       const bad = grounded(root, spec, a); if (bad) evidence.push(`criterion ${i + 1} evidence ${bad}`);
       // The right answer is not enough: the quote must contain the fragment that proves it.
-      const anchors = proofAnchors(spec.criteria[i]);
-      if (anchors.length && !anchors.some(k => squash(a.quote).includes(squash(k)))) evidence.push(`criterion ${i + 1} evidence does not quote ${anchors.join(' or ')}`);
+      // Backticked fragments are all required (so a common line like `return False` is tied to its function);
+      // calls merely named in the question need only one match.
+      const anchors = proofAnchors(spec.criteria[i]), ticked = /`[^`]{3,160}`/.test(String(spec.criteria[i]));
+      const quoted = k => squash(a.quote).includes(squash(k));
+      if (anchors.length && !(ticked ? anchors.every(quoted) : anchors.some(quoted))) evidence.push(`criterion ${i + 1} evidence does not quote ${anchors.join(ticked ? ' and ' : ' or ')}`);
     });
   }
   for (const t of spec.testResults ?? []) if (t.exit !== 0 && r.verdict === 'no_issues') evidence.push(`verdict "no_issues" although ${t.path} failed`);

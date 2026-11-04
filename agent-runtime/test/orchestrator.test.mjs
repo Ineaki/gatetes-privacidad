@@ -156,3 +156,9 @@ test('backticked proof must be quoted; a repeated fragment resolves to the PR di
   assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote caer\(99\)/);assert.equal(result.steps,1);
   assert.ok(base);
 });
+test('every backticked fragment must appear in the criterion quote',async t=>{
+  const {s,c}=fixture(t);s.submit(reviewSpec({criteria:['¿caer devuelve paracaidas? Cita `def caer(altura):` y `return "paracaidas"`.']}));
+  const r=JSON.parse(goodReview);r.criteria=[{criterion:'x',answer:'sí',met:'yes',file:'app/caida.py',line:3,quote:'return "paracaidas"',evidence:'The tall-drop branch returns the parachute.'}];
+  const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote def caer\(altura\): and return "paracaidas"/);
+});
