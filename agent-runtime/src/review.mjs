@@ -8,18 +8,20 @@ import { simulatedToolCall } from './guard.mjs';
 export const reviewProfiles = ['reviewer', 'checker'];
 
 export function reviewSchema(criteria = []) {
+  // Bounded arrays and strings keep the JSON inside the output budget (an unbounded "checked" list overflowed on PR #34).
+  const text = n => ({ type: 'string', maxLength: n });
   const finding = { type: 'object', required: ['file', 'line', 'quote', 'severity', 'issue'], properties: {
-    file: { type: 'string' }, line: { type: 'integer' }, quote: { type: 'string' },
-    severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, issue: { type: 'string' } } };
+    file: text(120), line: { type: 'integer' }, quote: text(120),
+    severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, issue: text(400) } };
   const schema = { type: 'object', required: ['verdict', 'summary', 'findings', 'checked'], properties: {
     verdict: { type: 'string', enum: ['issues', 'no_issues', 'cannot_determine'] },
-    summary: { type: 'string' }, findings: { type: 'array', items: finding },
-    checked: { type: 'array', items: { type: 'object', required: ['file', 'line', 'quote', 'observation'], properties: {
-      file: { type: 'string' }, line: { type: 'integer' }, quote: { type: 'string' }, observation: { type: 'string' } } } } } };
+    summary: text(600), findings: { type: 'array', maxItems: 6, items: finding },
+    checked: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'object', required: ['file', 'line', 'quote', 'observation'], properties: {
+      file: text(120), line: { type: 'integer' }, quote: text(120), observation: text(300) } } } } };
   if (criteria.length) {
     schema.required.push('criteria');
-    schema.properties.criteria = { type: 'array', items: { type: 'object', required: ['criterion', 'met', 'evidence'], properties: {
-      criterion: { type: 'string' }, met: { type: 'string', enum: ['yes', 'no', 'unknown'] }, evidence: { type: 'string' } } } };
+    schema.properties.criteria = { type: 'array', minItems: criteria.length, maxItems: criteria.length, items: { type: 'object', required: ['criterion', 'met', 'evidence'], properties: {
+      criterion: text(300), met: { type: 'string', enum: ['yes', 'no', 'unknown'] }, evidence: text(500) } } };
   }
   return schema;
 }
