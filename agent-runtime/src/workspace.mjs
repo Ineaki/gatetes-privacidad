@@ -12,7 +12,7 @@ export function validateSpec(input) {
   if (!input || typeof input!=='object' || Array.isArray(input)) throw Error('Task object required');
   if (typeof input.goal!=='string'||!input.goal.trim()||input.goal.length>5000) throw Error('Goal required (max 5000 characters)');
   const profile=input.profile??'researcher';
-  if (!['coder','researcher','reviewer'].includes(profile)) throw Error('Invalid profile');
+  if (!['coder','researcher','reviewer','checker'].includes(profile)) throw Error('Invalid profile');
   if (!Array.isArray(input.files)||input.files.length>20) throw Error('Explicit files required (max 20)');
   const files=[...new Set(input.files.map(validPath))].sort();
   const dependencies=input.dependencies??[];
@@ -22,7 +22,18 @@ export function validateSpec(input) {
   for (const a of acceptance) if (!files.includes(a.path)||typeof a.contains!=='string'||!a.contains||a.contains.length>2000) throw Error('Invalid acceptance assertion');
   const baseCommit=input.baseCommit??null;
   if(baseCommit!==null && (typeof baseCommit!=='string'||!/^[a-f0-9]{40}$/.test(baseCommit))) throw Error('Invalid pinned base commit');
-  return { goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), baseCommit, origin:String(input.origin??'local').slice(0,80) };
+  const diffBase=input.diffBase??null;
+  if(diffBase!==null && (typeof diffBase!=='string'||!/^[a-f0-9]{40}$/.test(diffBase))) throw Error('Invalid diff base commit');
+  const tests=input.tests??[];
+  if(!Array.isArray(tests)||tests.length>3||tests.some(p=>!files.includes(p)||!/(^|\/)tests\/test_[\w-]+\.py$/.test(p))) throw Error('Tests must be allowlisted tests/test_*.py files (max 3)');
+  const criteria=input.criteria??[];
+  if(!Array.isArray(criteria)||criteria.length>6||criteria.some(x=>typeof x!=='string'||!x.trim()||x.length>300)) throw Error('Invalid criteria (max 6, 300 characters each)');
+  const spec={ goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), baseCommit, origin:String(input.origin??'local').slice(0,80) };
+  // Optional review fields are only stored when used, so older task specs keep their idempotency keys.
+  if(diffBase) spec.diffBase=diffBase;
+  if(tests.length) spec.tests=[...new Set(tests)];
+  if(criteria.length) spec.criteria=criteria;
+  return spec;
 }
 export function safeFile(root, relative, allowed) {
   validPath(relative);

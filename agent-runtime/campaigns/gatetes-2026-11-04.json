@@ -1,0 +1,33 @@
+{
+  "id": "gatetes-prs-2026-11-04",
+  "jobs": [
+    {
+      "pr": 34,
+      "baseCommit": "39cdbc78fd7f6a204f94a7891697ac99f12142c9",
+      "objective": "Review the parachute-after-drag fix: after releasing a dragged cat above the floor, does it always start a visible fall and open the parachute when high enough? Check the drag clamp, the jump-down call and whether thresholds depend on screen height or DPI. Report only problems you can point to in the diff.",
+      "files": ["mascota_py/gatetes/cerebro.py"],
+      "test": "tests/test_caida_arrastre.py"
+    },
+    {
+      "pr": 32,
+      "baseCommit": "35b80b67322aa564cbe6457061ab55bdaa913f2c",
+      "objective": "Installer staging for groom_leg frames.",
+      "files": ["instalador/preparar_runtime.py"],
+      "skip": "Dani IA revalidated 35b80b6 technically on 2026-11-01 (one review per PR); the installer fix must not be repeated."
+    },
+    {
+      "pr": 33,
+      "baseCommit": "413884763039a0a50baa48a4032e793d34230701",
+      "objective": "Review that humor/meme animations can never run in production even when an old saved config enables them. Check every changed execution path in the diff. Report only concrete remaining paths.",
+      "files": ["mascota_py/gatetes/cerebro.py"],
+      "test": "tests/test_produccion.py"
+    },
+    {
+      "pr": 31,
+      "baseCommit": "7be217cdbd3565ca751308a3c4bade8a6cc4aae9",
+      "objective": "Review the Fluent menu order model added in menu_model.py: separators before Configuracion and Salir, no duplicated or missing entries. This PR conflicts with main; do not judge the conflict, only the model.",
+      "files": ["mascota_py/gatetes/menu_model.py"],
+      "test": "tests/test_menu_modelo.py"
+    }
+  ]
+}

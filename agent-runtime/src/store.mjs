@@ -2,7 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { ensureVault } from './config.mjs';
+import { fingerprint } from './guard.mjs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export class Store {
@@ -21,7 +23,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, task TEXT, file TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS exported_reports(id TEXT PRIMARY KEY);
       CREATE VIRTUAL TABLE IF NOT EXISTS report_search USING fts5(id UNINDEXED, task UNINDEXED, body);
-      CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, task TEXT, body TEXT NOT NULL, created INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, task TEXT, body TEXT NOT NULL, created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS fingerprints(fp TEXT NOT NULL, task TEXT PRIMARY KEY);`);
     // One startup reconciliation handles deleted Markdown exports; idle ticks are incremental.
     for(const r of this.db.prepare('SELECT id,file FROM reports').all()) if(!fs.existsSync(r.file)) this.db.prepare('DELETE FROM exported_reports WHERE id=?').run(r.id);
     this.flushReports();
@@ -44,6 +47,20 @@ export class Store {
       this.db.prepare("INSERT INTO tasks(id,key,spec,state,created,updated) VALUES(?,?,?,'queued',?,?)").run(id,key,JSON.stringify(spec),now,now);
       this.event(id,'submitted',{ profile: spec.profile }); return this.get(id);
     });
+  }
+  // Campaign and remote work go through here: an identical microtask is never queued twice.
+  submitUnique(spec, key) {
+    if(this.db.prepare('SELECT 1 FROM tasks WHERE key=?').get(key)) return this.submit(spec,key);
+    const run=args=>execFileSync('git',['-C',this.c.repo,...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','ignore']}).trim();
+    const commit=spec.baseCommit??run(['rev-parse','HEAD']);
+    const blobs=spec.files.map(p=>{try{return run(['rev-parse',`${commit}:${p}`]);}catch{return null;}});
+    const fp=fingerprint(spec,blobs);
+    const same=this.db.prepare('SELECT t.id,t.state FROM fingerprints f JOIN tasks t ON t.id=f.task WHERE f.fp=?').get(fp);
+    if(same) throw Error(`Duplicate microtask: identical to ${same.id} (${same.state}) for the same file contents`);
+    const task=this.submit(spec,key);
+    this.db.prepare('INSERT OR IGNORE INTO fingerprints VALUES(?,?)').run(fp,task.id);
+    this.event(task.id,'fingerprint',{fp,commit,blobs});
+    return task;
   }
   get(id) {
     const row = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id);
@@ -121,7 +138,9 @@ export class Store {
   flushReports() {
     for (const r of this.db.prepare('SELECT * FROM reports WHERE id NOT IN (SELECT id FROM exported_reports)').all()) {
       if (!fs.existsSync(r.file)) {
-        const body=`# Activity ${r.id}\n\nTask: ${r.task}\nDate: ${new Date(r.created).toISOString()}\n\n\`\`\`json\n${r.body}\n\`\`\`\n`;
+        const parsed=JSON.parse(r.body), outcome=parsed.result?.report_md??parsed.result?.error;
+        const head=outcome?`## Resultado: ${parsed.status}\n\n${outcome}\n\n## Registro completo\n\n`:'';
+        const body=`# Activity ${r.id}\n\nTask: ${r.task}\nDate: ${new Date(r.created).toISOString()}\n\n${head}\`\`\`json\n${r.body}\n\`\`\`\n`;
         fs.writeFileSync(r.file,body,{flag:'wx',mode:0o600});
       }
       this.db.prepare('INSERT OR IGNORE INTO exported_reports VALUES(?)').run(r.id);

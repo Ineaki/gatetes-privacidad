@@ -16,6 +16,8 @@ export function config(overrides = {}) {
     context: 8192, output: 1536, margin: 512, maxSteps: 16, maxSeconds: 600,
     requestMs: 120000, leaseMs: 45000, maxAttempts: 3, ...saved, ...overrides };
   c.repo = repo; c.vault = vault;
+  // Tests run with an explicit interpreter only; it is never taken from the vault settings.
+  c.python = overrides.python ?? process.env.AGENT_PYTHON ?? null;
   const url = new URL(c.ollama);
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.protocol !== 'http:') throw Error('Only loopback Ollama allowed');
   if (/cloud/i.test(c.model)) throw Error('Cloud models are disabled');
