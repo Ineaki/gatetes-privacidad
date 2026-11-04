@@ -162,3 +162,9 @@ test('every backticked fragment must appear in the criterion quote',async t=>{
   const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
   assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote def caer\(altura\): and return "paracaidas"/);
 });
+test('a quote longer than four lines is still grounded',async t=>{
+  const {s,c}=fixture(t);s.submit(reviewSpec());
+  const r=JSON.parse(goodReview);r.checked[0]={file:'app/caida.py',line:1,quote:'def caer(altura):\n    if altura > 40:\n        return "paracaidas"\n    return "salto"',observation:'Whole function quoted across four lines.'};
+  const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'completed');
+});

@@ -101,8 +101,10 @@ function grounded(root, spec, item) {
   const lines = fs.readFileSync(safeFile(root, item.file, spec.files), 'utf8').split('\n');
   const quote = squash(item.quote);
   if (quote.length < 6) return `${item.file}:${item.line} quote too short`;
-  // A quote starts at line i when it is inside lines i..i+3 but not inside i+1..i+4.
-  const at = i => squash(lines.slice(i, i + 4).join('')).includes(quote);
+  // A quote starts at line i when it is inside the window from i but not inside the window from i+1.
+  // The window covers the quote's own line count (a 5-line quote of PR #33 was wrongly rejected with a fixed 4).
+  const span = Math.max(4, String(item.quote).split('\n').length + 1);
+  const at = i => squash(lines.slice(i, i + span).join('')).includes(quote);
   const starts = lines.map((_, i) => i).filter(i => at(i) && !at(i + 1)).map(i => i + 1);
   const near = starts.filter(s => Math.abs(s - item.line) <= 3);
   let pick = near.length === 1 ? near[0] : (!near.length && starts.length === 1 ? starts[0] : null);
