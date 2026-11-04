@@ -22,7 +22,7 @@ const stable = v => JSON.stringify(v, Object.keys(v).sort());
 export const sha = v => createHash('sha256').update(typeof v === 'string' ? v : stable(v)).digest('hex');
 export const normalizeGoal = g => String(g).toLowerCase().replace(/\s+/g, ' ').trim();
 // Bump when review validation changes: a retry under new rules is not a repeated microtask.
-export const REVIEW_VERSION = 3;
+export const REVIEW_VERSION = 4;
 // Same profile, goal, files, tests, exact file contents and validation rules means the same microtask.
 export function fingerprint(spec, blobs) {
   return sha(JSON.stringify([spec.profile, normalizeGoal(spec.goal), spec.files, spec.tests ?? [], spec.criteria ?? [], spec.diffBase ?? null, blobs, REVIEW_VERSION]));

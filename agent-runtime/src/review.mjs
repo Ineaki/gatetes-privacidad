@@ -16,7 +16,8 @@ export function reviewMessages(spec, evidence) {
     'Reply with ONE JSON object matching the schema. Every finding and every checked item must cite file, the line number shown in the left column, ' +
     'and a short exact quote copied from that line. Do not invent problems: if nothing is wrong use verdict "no_issues" with an empty findings list. ' +
     'Use "cannot_determine" when the evidence is insufficient and say what is missing. "checked" holds only the 2-4 lines that decide the goal, ' +
-    'not a list of every definition. Answer every criterion with yes/no/unknown and line evidence. Be brief. Never write tool calls.';
+    'not a list of every definition. Answer every criterion with yes/no/unknown and line evidence; when a criterion contains `code` in backticks, ' +
+    'the quote for that criterion must contain that exact code, copied from the line where it appears. Be brief. Never write tool calls.';
   const contract = { goal: spec.goal, files: spec.files, criteria: spec.criteria ?? [], tests: (spec.testResults ?? []).map(t => ({ path: t.path, exit: t.exit })) };
   return [{ role: 'system', content: system }, { role: 'user', content: `TASK:\n${JSON.stringify(contract)}\n\nEVIDENCE:\n${evidence.text}` }];
 }
@@ -83,8 +84,18 @@ export function buildEvidence(root, spec, budgetBytes) {
 
 const norm = s => String(s).replace(/\s+/g, ' ').trim();
 const squash = s => String(s).replace(/\s+/g, '');
+// New-file line numbers added by the PR; used to resolve a quote that appears several times.
+function changedLines(root, spec, file) {
+  if (!spec.diffBase) return new Set();
+  const out = new Set(); let line = 0;
+  for (const raw of git(root, ['diff', '-U0', spec.diffBase, 'HEAD', '--', file]).split('\n')) {
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(raw);
+    if (h) line = Number(h[1]); else if (raw.startsWith('+') && !raw.startsWith('+++')) out.add(line++);
+  }
+  return out;
+}
 // A cited point counts only if its quote really exists in the file. Whitespace and line breaks are ignored;
-// a quote found uniquely at another line is accepted and the line is corrected (small models miscount lines).
+// a quote found uniquely at another line (or uniquely among the PR's changed lines) is accepted and the line corrected.
 function grounded(root, spec, item) {
   if (!spec.files.includes(item.file)) return `file ${item.file} not in allowlist`;
   const lines = fs.readFileSync(safeFile(root, item.file, spec.files), 'utf8').split('\n');
@@ -94,39 +105,51 @@ function grounded(root, spec, item) {
   const at = i => squash(lines.slice(i, i + 4).join('')).includes(quote);
   const starts = lines.map((_, i) => i).filter(i => at(i) && !at(i + 1)).map(i => i + 1);
   const near = starts.filter(s => Math.abs(s - item.line) <= 3);
-  const pick = near.length === 1 ? near[0] : (!near.length && starts.length === 1 ? starts[0] : null);
+  let pick = near.length === 1 ? near[0] : (!near.length && starts.length === 1 ? starts[0] : null);
+  if (pick === null && starts.length > 1) {
+    const changed = changedLines(root, spec, item.file), inDiff = starts.filter(s => changed.has(s));
+    if (inDiff.length === 1) pick = inDiff[0];
+  }
   if (pick === null) return `${item.file}:${item.line} quote ${starts.length ? 'ambiguous' : 'not found'} in file`;
   if (pick !== item.line) { item.cited_line = item.line; item.line = pick; }
   return null;
 }
+// The fragment that proves a criterion: backticked code chosen by the author, otherwise any call it names.
+export function proofAnchors(criterion) {
+  const ticks = [...String(criterion).matchAll(/`([^`]{3,160})`/g)].map(m => m[1]);
+  return ticks.length ? ticks : (String(criterion).match(/[A-Za-z_][\w.]*\([^()]*\)/g) ?? []);
+}
 
+// retryable: only format problems are re-asked. Wrong evidence is not: repeating the query returned the same
+// citation for both 7b and 14b on PR #34, even at temperature 0.3.
 export function assessReview(root, spec, content) {
-  const reasons = [];
+  const reasons = [], evidence = [];
   const fake = simulatedToolCall(content);
-  if (fake) return { ok: false, reasons: [`reply only simulated a tool call as text (${fake.excerpt.slice(0, 120)})`] };
+  if (fake) return { ok: false, retryable: true, reasons: [`reply only simulated a tool call as text (${fake.excerpt.slice(0, 120)})`] };
   let r;
-  try { r = JSON.parse(content); } catch { return { ok: false, reasons: ['reply is not the required JSON object'] }; }
+  try { r = JSON.parse(content); } catch { return { ok: false, retryable: true, reasons: ['reply is not the required JSON object'] }; }
   if (!['issues', 'no_issues', 'cannot_determine'].includes(r.verdict)) reasons.push('missing verdict');
   if (norm(r.summary).length < 40) reasons.push('summary under 40 characters');
   const findings = Array.isArray(r.findings) ? r.findings : [], checked = Array.isArray(r.checked) ? r.checked : [];
   if (r.verdict === 'issues' && !findings.length) reasons.push('verdict "issues" without findings');
   if (r.verdict === 'no_issues' && findings.some(f => f.severity !== 'minor')) reasons.push('verdict "no_issues" contradicts blocker/major findings');
   if (checked.length < 2) reasons.push('fewer than 2 checked code points');
-  for (const f of findings) { const bad = grounded(root, spec, f); if (bad) reasons.push(`finding ${bad}`); if (norm(f.issue).length < 20) reasons.push('finding without explanation'); }
-  for (const c of checked) { const bad = grounded(root, spec, c); if (bad) reasons.push(`checked ${bad}`); }
+  for (const f of findings) { const bad = grounded(root, spec, f); if (bad) evidence.push(`finding ${bad}`); if (norm(f.issue).length < 20) reasons.push('finding without explanation'); }
+  for (const c of checked) { const bad = grounded(root, spec, c); if (bad) evidence.push(`checked ${bad}`); }
   if (spec.criteria?.length) {
     const answered = Array.isArray(r.criteria) ? r.criteria : [];
     if (answered.length !== spec.criteria.length) reasons.push(`answered ${answered.length}/${spec.criteria.length} acceptance criteria`);
     answered.forEach((a, i) => {
       if (norm(a.evidence).length < 15) reasons.push('criterion without evidence');
-      const bad = grounded(root, spec, a); if (bad) reasons.push(`criterion evidence ${bad}`);
-      // A criterion that names a call must be answered with a quote of that call, not any nearby line (PR #34 comparison).
-      const calls = String(spec.criteria[i] ?? '').match(/[A-Za-z_][\w.]*\([^()]*\)/g) ?? [];
-      if (calls.length && !calls.some(k => squash(a.quote).includes(squash(k)))) reasons.push(`criterion ${i + 1} evidence does not quote ${calls.join(' or ')}`);
+      const bad = grounded(root, spec, a); if (bad) evidence.push(`criterion ${i + 1} evidence ${bad}`);
+      // The right answer is not enough: the quote must contain the fragment that proves it.
+      const anchors = proofAnchors(spec.criteria[i]);
+      if (anchors.length && !anchors.some(k => squash(a.quote).includes(squash(k)))) evidence.push(`criterion ${i + 1} evidence does not quote ${anchors.join(' or ')}`);
     });
   }
-  for (const t of spec.testResults ?? []) if (t.exit !== 0 && r.verdict === 'no_issues') reasons.push(`verdict "no_issues" although ${t.path} failed`);
-  return { ok: !reasons.length, reasons: [...new Set(reasons)].slice(0, 8), review: r };
+  for (const t of spec.testResults ?? []) if (t.exit !== 0 && r.verdict === 'no_issues') evidence.push(`verdict "no_issues" although ${t.path} failed`);
+  const all = [...new Set([...evidence, ...reasons])].slice(0, 8);
+  return { ok: !all.length, retryable: !evidence.length, evidenceFailed: evidence.length > 0, reasons: all, review: r };
 }
 
 // Tests are run by the orchestrator, never by the model. Only allowlisted test files are accepted.

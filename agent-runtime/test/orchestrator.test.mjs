@@ -58,11 +58,11 @@ test('review gets file evidence without tools and completes only when grounded',
   assert.match(report,/## Resultado: completed/);
   assert.ok(fs.readdirSync(path.join(c.vault,'evidence',result.id)).length===2,'every model call kept in vault');
 });
-test('ungrounded review is rejected after one retry instead of completing',async t=>{
+test('wrong evidence blocks at once without re-asking the model',async t=>{
   const {s,c}=fixture(t);s.submit(reviewSpec());
   const invented=JSON.parse(goodReview);invented.findings[0].quote='if height_px >= dpi_scale:';
   const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(invented)}})});
-  assert.equal(result.state,'blocked');assert.match(result.result.error,/quote not found/);assert.equal(result.steps,2);
+  assert.equal(result.state,'blocked');assert.match(result.result.error,/wrong evidence.*quote not found/);assert.equal(result.steps,1);
 });
 test('contradictory or empty reviews are not useful',async t=>{
   const {s,c}=fixture(t);s.submit(reviewSpec());
@@ -139,4 +139,20 @@ test('a criterion that names a call must quote that call, not a nearby line',asy
   const r=JSON.parse(goodReview);r.criteria=[{criterion:'x',answer:'sí',met:'yes',file:'app/caida.py',line:3,quote:'return "paracaidas"',evidence:'The parachute branch is reached for tall drops.'}];
   const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
   assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote caer\(altura\)/);
+});
+test('backticked proof must be quoted; a repeated fragment resolves to the PR diff',async t=>{
+  const {s,c,repo,g}=fixture(t);const base=g('rev-parse','HEAD').toString().trim();
+  fs.writeFileSync(path.join(repo,'app/caida.py'),code+'def otro():\n    return caer(99)\n\ndef soltar():\n    return caer(99)\n');g('commit','-qam','base dup');
+  const base2=g('rev-parse','HEAD').toString().trim();
+  fs.writeFileSync(path.join(repo,'app/caida.py'),code+'def otro():\n    return caer(99)\n\ndef soltar():\n    return caer(99)\n\ndef nuevo():\n    return caer(99)\n');g('commit','-qam','pr');
+  const head=g('rev-parse','HEAD').toString().trim();
+  const spec=validateSpec({goal:'Review the release path',profile:'reviewer',files:['app/caida.py'],baseCommit:head,diffBase:base2,criteria:['¿nuevo llama a `caer(99)`?']});
+  const r=JSON.parse(goodReview);
+  r.criteria=[{criterion:'x',answer:'sí',met:'yes',file:'app/caida.py',line:40,quote:'return caer(99)',evidence:'nuevo returns caer(99) on release.'}];
+  s.submit(spec);let result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'completed');assert.equal(result.result.review.criteria[0].line,12,'only the occurrence added by the PR');
+  s.submit(validateSpec({...spec,goal:'Review the release path again'}));
+  r.criteria[0].quote='return "salto"';result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote caer\(99\)/);assert.equal(result.steps,1);
+  assert.ok(base);
 });

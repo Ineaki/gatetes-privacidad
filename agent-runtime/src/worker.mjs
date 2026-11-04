@@ -144,8 +144,8 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
       const response=await callModel({model:c.model,messages,stream:false,think:false,format:schema,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
       if(response.done_reason==='length') throw new Unusable('Output limit reached before the review JSON was complete');
       const content=String(response.message?.content??'');
-      const verdict=response.message?.tool_calls?.length?{ok:false,reasons:['reply requested tools, which this profile does not have']}:assessReview(root,spec,content);
-      store.event(task.id,'assessment',{step:steps,ok:verdict.ok,reasons:verdict.reasons});
+      const verdict=response.message?.tool_calls?.length?{ok:false,retryable:true,reasons:['reply requested tools, which this profile does not have']}:assessReview(root,spec,content);
+      store.event(task.id,'assessment',{step:steps,ok:verdict.ok,retryable:verdict.retryable,reasons:verdict.reasons});
       if(verdict.ok) {
         const tests=spec.testResults, failed=tests.filter(t=>t.exit!==0);
         const report=reviewMarkdown(spec,verdict.review,tests,evidence.coverage);
@@ -154,6 +154,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
         checkpoint(); store.finish(task,failed.length?'blocked':'completed',result);
         return store.get(task.id);
       }
+      if(!verdict.retryable) throw new Unusable(`Review rejected for wrong evidence (not re-asked: repeating the query returns the same citation): ${verdict.reasons.join('; ')}`);
       if(attempt>=1||reprompted) throw new Unusable(`Review rejected after one bounded retry: ${verdict.reasons.join('; ')}`);
       reprompted=true; checkpoint();
       messages.push({role:'assistant',content:content.slice(0,4000)},{role:'user',content:correction(verdict.reasons)});

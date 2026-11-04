@@ -29,7 +29,7 @@ try {
   for (const model of models) {
     if (/cloud/i.test(model)) throw Error('Cloud models are disabled');
     const started = Date.now();
-    // Same single bounded retry as the worker, with the verifier's reasons.
+    // Same policy as the worker: one re-ask for format problems only, never for wrong evidence.
     let messages = body.messages, response, content, verdict, attempts = 0;
     for (; attempts < 2; attempts++) {
       response = await ollamaChat({ ...c, requestMs: 900000 }, { ...body, messages, model}, new AbortController().signal);
@@ -37,7 +37,7 @@ try {
       verdict = response.done_reason === 'length' ? { ok: false, reasons: ['output limit'] } : assessReview(root, spec, content);
       fs.writeFileSync(path.join(out, `${model.replace(/[:/]/g, '_')}-call${attempts + 1}.json`), JSON.stringify({ model, request: { ...body, messages, model }, response: { content, done_reason: response.done_reason },
         prompt_tokens: response.prompt_eval_count, output_tokens: response.eval_count, ms: Date.now() - started, assessment: verdict }, null, 2), { mode: 0o600 });
-      if (verdict.ok) break;
+      if (verdict.ok || !verdict.retryable) break;
       messages = [...messages, { role: 'assistant', content: content.slice(0, 4000) }, { role: 'user', content: correction(verdict.reasons) }];
     }
     summary.push({ model, attempts: Math.min(attempts + 1, 2), ms: Date.now() - started, prompt_tokens: response.prompt_eval_count, output_tokens: response.eval_count, grounded: verdict.ok, reasons: verdict.reasons,

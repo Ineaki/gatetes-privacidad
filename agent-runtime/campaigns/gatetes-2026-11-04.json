@@ -1,17 +1,19 @@
 {
-  "id": "gatetes-prs-2026-11-04c",
+  "id": "gatetes-prs-2026-11-04d",
   "jobs": [
     {
       "pr": 34,
       "baseCommit": "39cdbc78fd7f6a204f94a7891697ac99f12142c9",
       "objective": "Review the parachute-after-drag fix: after releasing a dragged cat above the floor, does it always start a visible fall and open the parachute when high enough? Check the drag clamp, the jump-down call and whether thresholds depend on screen height or DPI. Report only problems you can point to in the diff.",
       "files": [
-        "mascota_py/gatetes/cerebro.py"
+        "mascota_py/gatetes/cerebro.py",
+        "mascota_py/gatetes/escenario.py"
       ],
       "test": "tests/test_caida_arrastre.py",
       "criteria": [
-        "Al soltar tras arrastrar por encima del suelo, ¿se inicia siempre una caída visible (no teletransporte)?",
-        "¿El umbral del paracaídas depende de la altura de pantalla o del DPI, o es un valor fijo en píxeles?"
+        "Al soltar en el aire tras arrastrar, ¿mouse_up llama a `self.start_jump_down(al_suelo=True)` para que haya caída visible?",
+        "¿El umbral del paracaídas se calcula con `float(self.A.UmbralParacaidasS) * float(self.S)`, es decir, escala con S en vez de ser píxeles fijos?",
+        "¿S se deriva del DPI con `dpi / 2.54 * tamano_cm`?"
       ]
     },
     {
