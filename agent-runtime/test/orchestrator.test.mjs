@@ -134,3 +134,9 @@ test('grounding ignores line breaks and corrects a miscounted line, but rejects 
   const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
   assert.equal(result.state,'completed');assert.equal(result.result.review.checked[0].line,2);assert.match(result.result.report_md,/1→2/);
 });
+test('a criterion that names a call must quote that call, not a nearby line',async t=>{
+  const {s,c}=fixture(t);s.submit(reviewSpec({criteria:['¿Se llama a caer(altura) con la altura real?']}));
+  const r=JSON.parse(goodReview);r.criteria=[{criterion:'x',answer:'sí',met:'yes',file:'app/caida.py',line:3,quote:'return "paracaidas"',evidence:'The parachute branch is reached for tall drops.'}];
+  const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'blocked');assert.match(result.result.error,/does not quote caer\(altura\)/);
+});
