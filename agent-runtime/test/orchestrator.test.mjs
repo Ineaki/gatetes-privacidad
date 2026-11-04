@@ -77,16 +77,27 @@ test('identical microtasks are refused using file hashes',t=>{
   fs.writeFileSync(path.join(repo,'app/caida.py'),code+'# changed\n');g('commit','-am','change');
   assert.ok(s.submitUnique(reviewSpec(),'c').id,'new file contents are a new microtask');
 });
-test('remote contract accepts the Fox format only for local engines',t=>{
+test('remote contract routes engines: checker/ollama local, implementer+claude and reviewer+codex via orq',t=>{
   const {c}=fixture(t);c.repoName='Ineaki/gatetes';
   const resolve=()=>({baseCommit:'a'.repeat(40),diffBase:'b'.repeat(40)});
   const base={kind:'task',key:'fox-2026-11-04-001',task:{goal:'Review the fall threshold for DPI problems',profile:'checker',repo:'Ineaki/gatetes',pr:34,
     files:['app/caida.py','app/tests/test_caida.py'],acceptance:['pytest app/tests/test_caida.py pasa','Explica si el umbral depende del DPI']}};
   const spec=parseInstruction(base,c,resolve);
   assert.deepEqual(spec.tests,['app/tests/test_caida.py']);assert.deepEqual(spec.criteria,['Explica si el umbral depende del DPI']);assert.equal(spec.profile,'checker');
-  const bad=patch=>()=>parseInstruction({...base,task:{...base.task,...patch}},c,resolve);
-  assert.throws(bad({engine:'claude'}),/not local/);
-  assert.throws(bad({profile:'implementer'}),/not accepted/);
+  const bad=patch=>()=>parseInstruction({...base,task:{...base.task,...patch}},c,resolve,()=>resolve);
+  // checker siempre es local, aunque pida otro motor.
+  assert.equal(bad({engine:'claude'})().profile,'checker');assert.equal(bad({engine:'claude'})().engine,undefined);
+  const impl=bad({profile:'implementer',engine:'claude'})();
+  assert.equal(impl.engine,'claude');assert.equal(impl.profile,'implementer');assert.equal(impl.repo,'Ineaki/gatetes');assert.equal(impl.pr,34);
+  assert.deepEqual(impl.tests,['app/tests/test_caida.py']);assert.equal(impl.criteria.length,2);
+  const rev=bad({profile:'reviewer',engine:'codex',files:['panel/']})();assert.equal(rev.engine,'codex');assert.deepEqual(rev.files,['panel/']);
+  assert.equal(bad({profile:'implementer'})().engine,'claude');
+  assert.throws(bad({profile:'implementer',engine:'codex'}),/runs on engine "claude"/);
+  assert.throws(bad({profile:'reviewer',engine:'claude'}),/"codex" or "ollama"/);
+  assert.throws(bad({engine:'gpt'}),/not accepted/);
+  assert.throws(bad({profile:'implementer',engine:'claude',repo:'Ineaki/otro'}),/no local clone/);
+  assert.throws(bad({profile:'implementer',engine:'claude',files:['.env']}),/Forbidden/);
+  assert.throws(bad({profile:'nadie'}),/not accepted/);
   assert.throws(bad({acceptance:[]}),/acceptance/);
   assert.throws(bad({files:['a','b','c','d','e']}),/1-4/);
   assert.throws(bad({repo:'Ineaki/otro'}),/repo must be/);
@@ -124,9 +135,9 @@ test('remote inbox round trip: receipt, local execution, report and private push
   assert.equal(receipt.state,'completed');assert.equal(receipt.verdict,'issues');assert.ok(fs.existsSync(path.join(mirror,receipt.report)));
   const pushed=sh(vaultOrigin,'ls-tree','-r','--name-only','main');
   assert.match(pushed,/receipts\/sintetica-001.json/);assert.doesNotMatch(pushed,/sqlite|credentials|evidence/);
-  fs.writeFileSync(path.join(mirror,'inbox/nube-001.json'),JSON.stringify({...instruction,key:'nube-001',task:{...instruction.task,engine:'codex'}}));
+  fs.writeFileSync(path.join(mirror,'inbox/nube-001.json'),JSON.stringify({...instruction,key:'nube-001',task:{...instruction.task,engine:'gpt'}}));
   syncRemote(s,c,mirror);
-  assert.match(JSON.parse(fs.readFileSync(path.join(mirror,'receipts/nube-001.json'),'utf8')).reason,/not local/);
+  assert.match(JSON.parse(fs.readFileSync(path.join(mirror,'receipts/nube-001.json'),'utf8')).reason,/not accepted/);
 });
 test('grounding ignores line breaks and corrects a miscounted line, but rejects invented quotes',async t=>{
   const {s,c}=fixture(t);s.submit(reviewSpec());
@@ -167,4 +178,48 @@ test('a quote longer than four lines is still grounded',async t=>{
   const r=JSON.parse(goodReview);r.checked[0]={file:'app/caida.py',line:1,quote:'def caer(altura):\n    if altura > 40:\n        return "paracaidas"\n    return "salto"',observation:'Whole function quoted across four lines.'};
   const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
   assert.equal(result.state,'completed');
+});
+
+// orq falso (test/fixtures/fake-orq.ps1): imita ticket start / implement / review con un ticket.json como el real.
+function orqFixture(t,extraEnv={}){
+  const f=fixture(t);f.c.repoName='Ineaki/gatetes';
+  fs.mkdirSync(path.join(f.repo,'app/tests'),{recursive:true});fs.writeFileSync(path.join(f.repo,'app/tests/test_caida.py'),'def test_ok():\n    assert True\n');f.g('add','.');f.g('commit','-m','tests');
+  const env={AGENT_ORQ_SCRIPT:path.join(import.meta.dirname,'fixtures','fake-orq.ps1'),AGENT_ORQ_NO_PUSH:'1',AGENT_ORQ_REPOS:JSON.stringify({'Ineaki/gatetes':f.repo}),...extraEnv},saved={};
+  for(const [k,v] of Object.entries(env)){saved[k]=process.env[k];process.env[k]=v;}
+  t.after(()=>{for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}});
+  const head=execFileSync('git',['-C',f.repo,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+  const make=(key,task)=>parseInstruction({kind:'task',key,task:{goal:'Marca app/caida.py como revisado con un comentario corto',repo:'Ineaki/gatetes',files:['app/caida.py','app/tests/test_caida.py'],acceptance:['pytest app/tests/test_caida.py pasa'],...task}},f.c,()=>({baseCommit:head}),()=>()=>({baseCommit:head}));
+  return {...f,make};
+}
+test('implementer+claude runs orq implement, records metrics and a short headline, commits on orq/<key> without push',async t=>{
+  const {s,c,make}=orqFixture(t);
+  const task=s.submit(make('orq-impl-001',{profile:'implementer',engine:'claude'}),'remote-orq-impl-001');
+  const done=await runOne(s,c);
+  assert.equal(done.state,c.python?'completed':'blocked',JSON.stringify(done.result).slice(0,400));
+  assert.equal(done.result.engine,'claude');assert.equal(done.result.branch,'orq/orq-impl-001');assert.equal(done.result.pushed,false);
+  assert.deepEqual(done.result.changed,['app/caida.py']);assert.match(done.result.commit,/^[a-f0-9]{40}$/);
+  assert.equal(done.result.attempts.length,1);assert.equal(done.result.attempts[0].step.model,'sonnet');
+  const m=s.metrics(task.id);assert.equal(m[0].model,'claude:sonnet');assert.equal(m[0].input_tokens,1200);assert.equal(m[0].output_tokens,300);
+  assert.ok(done.result.headline.split(/\s+/).length<=10);
+  const report=s.db.prepare('SELECT file FROM reports WHERE task=?').get(task.id).file;
+  assert.equal(fs.readFileSync(report,'utf8').split('\n')[0],done.result.headline+'.');
+  const kinds=s.db.prepare('SELECT kind FROM events WHERE task=?').all(task.id).map(e=>e.kind);
+  assert.ok(kinds.includes('orq_started')&&kinds.includes('orq_finished'));
+});
+test('implementer escalates the model once when the cheap attempt fails',async t=>{
+  const {s,c,make}=orqFixture(t,{FAKE_ORQ_FAIL_FIRST:'1'});
+  s.submit(make('orq-impl-002',{profile:'implementer',engine:'claude'}),'remote-orq-impl-002');
+  const done=await runOne(s,c);
+  assert.deepEqual(done.result.attempts.map(a=>a.step.model),['sonnet','opus']);
+  assert.equal(done.result.attempts[0].state,'PARTIAL_RECOVERABLE');assert.equal(done.result.attempts[1].state,'CHECKPOINTED');
+});
+test('reviewer+codex runs a review-only orq ticket with codex_first and low effort',async t=>{
+  const {s,c,make}=orqFixture(t);
+  const task=s.submit(make('orq-rev-001',{profile:'reviewer',engine:'codex',pr:7}),'remote-orq-rev-001');
+  const done=await runOne(s,c);
+  assert.equal(done.state,'completed',JSON.stringify(done.result).slice(0,300));
+  assert.match(done.result.attempts[0].message,/review codex_first low/);
+  assert.deepEqual(done.result.reviewers,['codex']);assert.equal(done.result.review.findings[0].severity,'P2');
+  assert.match(done.result.headline,/^Codex revisó la PR #7/);
+  assert.equal(s.metrics(task.id)[0].model,'codex:effort-low');
 });

@@ -203,8 +203,9 @@ export async function runOrqTask(store, c, task, ctx) {
     return { state: 'completed', result };
   }
   // Implementer: pruebas pedidas, commit en la rama propia y push solo de orq/<key>.
-  const changed = git(root, ['status', '--porcelain=v1', '--untracked-files=all']).split('\n').filter(l => l && !/\s\.orq\//.test(l));
-  result.changed = changed.map(l => l.slice(3)).slice(0, 50);
+  const changed = [...new Set([...git(root, ['diff', '--name-only', 'HEAD']).split('\n'), ...git(root, ['ls-files', '--others', '--exclude-standard']).split('\n')])]
+    .map(l => l.trim()).filter(l => l && !l.startsWith('.orq/'));
+  result.changed = changed.slice(0, 50);
   if (spec.tests?.length) result.tests = runTests(c, root, { ...spec, files: [...spec.files, ...spec.tests] });
   const failed = (result.tests ?? []).filter(t => t.exit !== 0);
   if (!changed.length) {
@@ -221,7 +222,7 @@ export async function runOrqTask(store, c, task, ctx) {
     result.report_md = reportMd(spec, result, final);
     return { state: 'blocked', result };
   }
-  git(root, ['add', '-A', '--', '.', ':!.orq']);
+  git(root, ['add', '-A']); // .orq/ está en info/exclude
   git(root, ['-c', 'user.name=Claude (orq)', '-c', 'user.email=noreply@anthropic.com', 'commit', '-q', '-m', `${spec.key}: ${spec.goal.slice(0, 60)}\n\nEncargo de Fox ejecutado por orq implement (${final.step.model ?? 'claude'}).\n\nCo-Authored-By: Claude <noreply@anthropic.com>`]);
   result.commit = git(root, ['rev-parse', 'HEAD']);
   if (PROTECTED.has(branch)) throw Error('Refusing to push a protected branch');
@@ -260,6 +261,9 @@ function readReviewSummary(root, ticketId) {
 }
 
 function reportMd(spec, r, final) {
+  // Regla de los informes: titular de 10 palabras o menos.
+  const words = String(r.headline).split(/\s+/).filter(Boolean);
+  r.headline = words.slice(0, 10).join(' ');
   const lines = [r.headline, '', `- Encargo: \`${spec.key}\` · ${spec.profile} · motor ${spec.engine} vía orq`, `- Repo: ${spec.repo} · commit base ${spec.baseCommit.slice(0, 7)}${spec.pr ? ` · PR #${spec.pr}` : ''}`,
     `- Rama de trabajo: \`${r.branch}\`${r.commit ? ` · commit ${r.commit.slice(0, 7)}` : ''}${r.pushed ? ' (subida)' : ''}${r.pr ? ` · PR ${r.pr}` : ''}`, ''];
   lines.push('## Intentos', '', '| # | Ticket orq | Modelo/esfuerzo | Estado | Mensaje |', '| --- | --- | --- | --- | --- |');
