@@ -235,3 +235,21 @@ test('a paused engine blocks the task with its reason and never relays to anothe
   s.submit(make('orq-rev-003',{profile:'reviewer',engine:'codex',pr:8}),'remote-orq-rev-003');
   assert.equal((await runOne(s,c)).state,'completed');
 });
+
+test('checker that only runs pytest is deterministic: no model call, real output, test folders accepted',async t=>{
+  const {s,c,g,repo}=fixture(t,{python:process.env.AGENT_PYTHON??null});c.repoName='Ineaki/gatetes';
+  fs.mkdirSync(path.join(repo,'app/tests'),{recursive:true});fs.writeFileSync(path.join(repo,'app/tests/test_a.py'),'def test_a():\n    assert True\n');g('add','.');g('commit','-m','t');
+  const head=execFileSync('git',['-C',repo,'rev-parse','HEAD'],{encoding:'utf8'}).trim();
+  const mk=task=>parseInstruction({kind:'task',key:'det-001',task:{goal:'Ejecuta las pruebas de la carpeta de tests y pega la salida',profile:'checker',repo:'Ineaki/gatetes',...task}},c,()=>({baseCommit:head}));
+  const spec=mk({files:['app/tests/'],acceptance:['Salida real de pytest pegada en el informe']});
+  assert.deepEqual(spec.deterministic,{kind:'pytest',targets:['app/tests']});assert.deepEqual(spec.files,['app/tests']);
+  assert.equal(mk({files:['app/tests/test_a.py'],acceptance:['Explica por qué falla, con archivo:línea']}).deterministic,undefined);
+  assert.equal(mk({files:['app/caida.py'],acceptance:['pytest pasa']}).deterministic,undefined);
+  s.submit(spec);
+  let called=false;
+  const done=await runOne(s,c,{chat:async()=>{called=true;throw Error('no model expected');}});
+  assert.equal(called,false);
+  if(c.python){assert.equal(done.state,'completed',JSON.stringify(done.result).slice(0,300));assert.match(done.result.headline,/1 pasan, 0 fallan/);assert.match(done.result.report_md,/1 passed/);}
+  else assert.equal(done.state,'blocked');
+  assert.equal(s.metrics(done.id)[0].model,'ninguno (pytest en el PC)');
+});

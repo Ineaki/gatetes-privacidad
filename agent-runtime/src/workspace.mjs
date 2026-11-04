@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { hash } from './store.mjs';
+import { validDeterministic } from './deterministic.mjs';
 
 const forbidden = /(^|\/)(\.git|\.env[^/]*|node_modules|vault|logs|worktrees|credentials[^/]*|[^/]*\.(?:pem|key|token|sqlite[^/]*))($|\/)/i;
 export function validPath(p) {
@@ -33,6 +34,10 @@ export function validateSpec(input) {
   if(diffBase) spec.diffBase=diffBase;
   if(tests.length) spec.tests=[...new Set(tests)];
   if(criteria.length) spec.criteria=criteria;
+  if(input.deterministic) {
+    if(profile!=='checker') throw Error('Only checker tasks can be deterministic');
+    spec.deterministic=validDeterministic(input.deterministic,files);
+  }
   return spec;
 }
 export function safeFile(root, relative, allowed) {

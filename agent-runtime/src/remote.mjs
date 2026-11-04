@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { validateSpec } from './workspace.mjs';
 import { scrub, containsSecret } from './guard.mjs';
 import { routeEngine, parseOrqInstruction } from './orq.mjs';
+import { detectDeterministic } from './deterministic.mjs';
 
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
 const git = (repo,args) => execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:1_000_000,stdio:['ignore','pipe','pipe']}).trim();
@@ -38,6 +39,9 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   if(t.pr!==undefined&&(!Number.isInteger(t.pr)||t.pr<1)) throw Error('pr must be a positive integer');
   if(t.branch!==undefined&&(typeof t.branch!=='string'||!/^[\w./-]{1,120}$/.test(t.branch)||t.branch.includes('..'))) throw Error('invalid branch name');
   const {baseCommit,diffBase}=resolveCommit({pr:t.pr,branch:t.branch});
+  // checker que solo ejecuta pytest (archivos o carpeta tests/): lo hace el PC, sin modelo ni citas.
+  const deterministic=profile==='checker'&&!acceptance.length?detectDeterministic(t.files,criteria.concat(tests.map(p=>`pytest ${p}`))):null;
+  if(deterministic) return validateSpec({goal:t.goal,profile,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
   return validateSpec({goal:t.goal,profile,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
 }
 
