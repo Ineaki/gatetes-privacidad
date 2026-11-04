@@ -77,7 +77,7 @@ export function parseOrqInstruction(value, c, engine, resolveFor) {
 
 function runProcess(file, args, { cwd, signal, timeoutMs }) {
   return new Promise(resolve => {
-    const child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NO_COLOR: '1' } });
+    const child = spawn(file, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() });
     let out = '', err = '', done = false;
     const finish = r => { if (!done) { done = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(r); } };
     const kill = () => { try { execFileSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true }); } catch { child.kill(); } };
@@ -89,6 +89,13 @@ function runProcess(file, args, { cwd, signal, timeoutMs }) {
     child.on('error', e => finish({ code: null, out, err: String(e.message) }));
     child.on('close', code => finish({ code, out, err }));
   });
+}
+
+// Las CLI usan su propia sesión guardada; las variables de una sesión anfitriona de Claude Code las romperían.
+function childEnv() {
+  const env = { ...process.env, NO_COLOR: '1' };
+  for (const k of Object.keys(env)) if (/^(CLAUDECODE|CLAUDE_CODE_|CLAUDE_AGENT_SDK_|CLAUDE_PID$|CLAUDE_EFFORT$|ANTHROPIC_BASE_URL$)/.test(k)) delete env[k];
+  return env;
 }
 
 const lastJson = text => { const i = text.indexOf('{'); if (i < 0) return null; try { return JSON.parse(text.slice(i)); } catch { return null; } };
@@ -116,6 +123,8 @@ function writeOrqConfig(root, spec, step) {
     schemaVersion: '1.0.0', mode: spec.engine === 'codex' ? 'codex_first' : 'adaptive', baseBranch: 'origin/main',
     protectedBranches: ['main', 'master'],
     allowedModels: { claude: step.model ? [step.model] : [], codex: [], cursor: [] },
+    // Encargo para Claude: implementa Claude o se bloquea; sin reserva en Cursor ni Codex.
+    implementers: ['claude'],
     providers: { claude: { permissionMode: 'acceptEdits', outputFormat: 'json' }, codex: { implementSandbox: null, reasoningEffort: step.effort ?? null }, cursor: { implementExtraFlags: [] } },
     timeouts: { implementSeconds: 1200, reviewSeconds: 900, preflightSeconds: 30, checkSeconds: 120 },
     scope: { include: spec.files.map(f => f.endsWith('/') ? `${f}**` : f), exclude: [] },
@@ -130,6 +139,14 @@ function description(spec) {
     'Reglas: contexto mínimo, un solo intento, sin commit, push, merge ni deploy, nada de secretos. ' +
     (spec.profile === 'reviewer' ? 'Revisión única, sin cambiar código.' : 'Deja los cambios sin commitear en este worktree.')].join('\n');
 }
+
+function failureClasses(root, id) {
+  try {
+    return fs.readFileSync(path.join(root, '.orq', 'tickets', id, 'attempts.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean)
+      .map(l => JSON.parse(l).attempt).filter(a => a && !a.ok).map(a => `${a.provider}: ${a.failureClass}`);
+  } catch { return []; }
+}
+const AUTH_HELP = { claude: 'la CLI claude de este PC no tiene sesión: abre una terminal, ejecuta `claude` y haz /login', codex: 'la CLI codex no tiene sesión: ejecuta `codex login`', cursor: 'Cursor CLI sin sesión: ejecuta `cursor-agent login`' };
 
 function readTicket(root, id) {
   try { return JSON.parse(fs.readFileSync(path.join(root, '.orq', 'tickets', id, 'ticket.json'), 'utf8')); } catch { return null; }
@@ -173,14 +190,21 @@ export async function runOrqTask(store, c, task, ctx) {
     if (!phases.length) store.metric(task.id, { run_id: ticketId, model: `${spec.engine}:${step.model ?? step.effort ?? 'default'}`, input_tokens: null, output_tokens: null, duration_ms: Date.now() - t0, cloud: true, error: 'sin métricas de orq' });
     const state = run.json?.state ?? ticket?.state ?? 'UNKNOWN';
     const ok = spec.profile === 'reviewer' ? state === 'READY_FOR_HUMAN' : state === 'CHECKPOINTED';
-    const attempt = { ticket: ticketId, step, state, exit: run.json?.exitCode ?? run.code, message: scrub(String(run.json?.message ?? run.err ?? '').slice(0, 400)), reportPath: run.json?.reportPath ?? null, implementer: ticket?.implementer ?? null };
+    const failures = failureClasses(root, ticketId);
+    const raw = String(run.json?.message ?? run.err ?? '');
+    // La salida de pwsh llega en la página de códigos de la consola; si los acentos se rompen, se usa el estado del ticket.
+    const text = raw.includes('�') ? `${state}${ticket?.blockedReason ? ` (${ticket.blockedReason})` : ''}` : raw;
+    const help = [...new Set(failures.filter(f => f.endsWith(': auth')).map(f => AUTH_HELP[f.split(':')[0]]).filter(Boolean))];
+    const message = [text, failures.length ? `fallos: ${failures.join(', ')}` : '', ...help].filter(Boolean).join(' · ');
+    const attempt = { ticket: ticketId, step, state, exit: run.json?.exitCode ?? run.code, message: scrub(message.slice(0, 600)), failures, reportPath: run.json?.reportPath ?? null, implementer: ticket?.implementer ?? null };
     attempts.push(attempt);
     store.event(task.id, 'orq_finished', { engine: spec.engine, ticket: ticketId, step: i + 1, ...step, state, exit: attempt.exit, message: attempt.message.slice(0, 200) });
     ctx.checkpoint({ orq: attempts });
     if (ok) { final = { ...attempt, ticketData: ticket }; break; }
     if (run.aborted) break;
-    // Riesgo crítico o bloqueo de preflight: subir de modelo no lo arregla.
+    // Riesgo crítico, bloqueo de preflight o falta de sesión: subir de modelo no lo arregla.
     if (/critical|Preflight bloqueante/i.test(attempt.message)) break;
+    if (failures.length && failures.every(f => /: (auth|quota_exhausted|cli_not_found)$/.test(f))) { attempt.noEscalation = 'subir de modelo no arregla un fallo de sesión, cuota o CLI'; break; }
   }
   const result = { engine: spec.engine, attempts, workspace: root, branch, elapsed_ms: Date.now() - started, metrics: store.metrics(task.id) };
   if (!final) {
