@@ -1,5 +1,42 @@
 # Contract for delegating to the local worker
 
+## Remote inbox (verified bridge, 2026-11-04)
+
+The campaign process (`src/campaign.mjs serve`) pulls the private
+`Ineaki/gatetes-agent-vault` about once a minute. A remote agent creates
+`inbox/<key>.json`; the PC answers in `receipts/<key>.json` and keeps that
+receipt updated with `state`, `verdict`, `reason` and `report` until the task ends.
+
+```json
+{
+  "kind": "task",
+  "key": "fox-2026-11-04-001",
+  "task": {
+    "goal": "20-1000 characters: what to check and what a useful answer contains.",
+    "profile": "reviewer | checker",
+    "engine": "ollama",
+    "repo": "Ineaki/gatetes",
+    "pr": 34,
+    "files": ["mascota_py/gatetes/cerebro.py", "mascota_py/tests/test_caida_arrastre.py"],
+    "acceptance": ["pytest mascota_py/tests/test_caida_arrastre.py pasa", "Free-text criterion the review must answer with evidence"],
+    "origin": "fox"
+  }
+}
+```
+
+Rejected with an explicit reason in the receipt: any `engine` other than
+`ollama`, profiles `implementer`/`coder`, more than 4 files, no acceptance,
+another repo, a key that differs from the file name, credential-like content,
+or a microtask identical (same goal, profile, files and file hashes) to one
+already submitted. Work is pinned to the PR head / branch / `origin/main`
+commit fetched at acceptance and runs in its own worktree; nothing is pushed
+to the application repository.
+
+`completed` for reviewer/checker means: the orchestrator ran the listed tests,
+and the model's JSON review cited lines whose quoted text was verified in the
+files. Replies that only write tool calls as text are re-asked once and then
+blocked as `unusable_result`.
+
 This is a configuration reference, not an automatically installed Grok Bot skill.
 Use only an integration actually supported by your account. Grok Bot's internal
 model is not replaced by this runtime.
