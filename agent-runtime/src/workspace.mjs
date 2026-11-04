@@ -20,7 +20,9 @@ export function validateSpec(input) {
   const acceptance=input.acceptance??[];
   if (!Array.isArray(acceptance)||acceptance.length>10) throw Error('Invalid acceptance');
   for (const a of acceptance) if (!files.includes(a.path)||typeof a.contains!=='string'||!a.contains||a.contains.length>2000) throw Error('Invalid acceptance assertion');
-  return { goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), origin:String(input.origin??'local').slice(0,80) };
+  const baseCommit=input.baseCommit??null;
+  if(baseCommit!==null && (typeof baseCommit!=='string'||!/^[a-f0-9]{40}$/.test(baseCommit))) throw Error('Invalid pinned base commit');
+  return { goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), baseCommit, origin:String(input.origin??'local').slice(0,80) };
 }
 export function safeFile(root, relative, allowed) {
   validPath(relative);
@@ -41,7 +43,7 @@ export function git(repo,args) { return execFileSync('git',['-C',repo,...args],{
 export function taskWorkspace(c,task) {
   const root=path.join(c.vault,'worktrees',task.id);
   if (!fs.existsSync(root)) {
-    git(c.repo,['worktree','add','-b',`agent/task-${task.id}`,root,'HEAD']);
+    git(c.repo,['worktree','add','-b',`agent/task-${task.id}`,root,task.spec.baseCommit??'HEAD']);
   }
   if (git(root,['rev-parse','--show-toplevel']).replaceAll('\\','/').toLowerCase()!==root.replaceAll('\\','/').toLowerCase()) throw Error('Wrong worktree');
   return root;

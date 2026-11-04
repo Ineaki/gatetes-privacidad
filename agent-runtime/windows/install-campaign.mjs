@@ -1,0 +1,21 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn,execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { config } from '../src/config.mjs';
+
+if(process.platform!=='win32') throw Error('Windows only');
+const c=config(),remote=process.env.AGENT_REMOTE,python=process.env.AGENT_PYTHON;
+if(!remote||!python||!fs.existsSync(path.join(remote,'.git'))||!fs.existsSync(python)) throw Error('Set AGENT_REMOTE and AGENT_PYTHON to installed paths');
+const campaign=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../src/campaign.mjs');
+const quote=s=>'"'+s.replaceAll('"','""')+'"';
+const launcher=path.join(c.vault,'campaign-startup.vbs');
+const env={AGENT_REPO:c.repo,AGENT_VAULT:c.vault,AGENT_REMOTE:remote,AGENT_PYTHON:python};
+const lines=['Set sh = CreateObject("WScript.Shell")',...Object.entries(env).map(([k,v])=>`sh.Environment("PROCESS")(${quote(k)}) = ${quote(v)}`),`sh.Run ${quote(`"${process.execPath}" "${campaign}" serve`)}, 0, False`];
+fs.writeFileSync(launcher,lines.join('\r\n')+'\r\n',{mode:0o600});
+const setup="$p=Join-Path ([Environment]::GetFolderPath('Startup')) 'Gatetes Ollama Orchestrator.lnk'; if(Test-Path -LiteralPath $p){throw 'Startup shortcut exists'}; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($p); $s.TargetPath=Join-Path $env:WINDIR 'System32/wscript.exe'; $s.Arguments='\"'+$env:AGENT_LAUNCHER+'\"'; $s.WindowStyle=7; $s.Save()";
+execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',setup],{env:{...process.env,AGENT_LAUNCHER:launcher},windowsHide:true,stdio:'pipe'});
+const stdout=fs.openSync(path.join(c.vault,'campaign.stdout.log'),'a',0o600),stderr=fs.openSync(path.join(c.vault,'campaign.stderr.log'),'a',0o600);
+const child=spawn(process.execPath,[campaign,'serve'],{detached:true,windowsHide:true,stdio:['ignore',stdout,stderr],env:{...process.env,...env},cwd:path.dirname(c.repo)});
+child.unref();fs.closeSync(stdout);fs.closeSync(stderr);
+console.log(`Autostart installed; local campaign process ${child.pid}.`);
