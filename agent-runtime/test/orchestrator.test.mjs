@@ -198,8 +198,8 @@ test('implementer+claude runs orq implement, records metrics and a short headlin
   assert.equal(done.state,c.python?'completed':'blocked',JSON.stringify(done.result).slice(0,400));
   assert.equal(done.result.engine,'claude');assert.equal(done.result.branch,'orq/orq-impl-001');assert.equal(done.result.pushed,false);
   assert.deepEqual(done.result.changed,['app/caida.py']);assert.match(done.result.commit,/^[a-f0-9]{40}$/);
-  assert.equal(done.result.attempts.length,1);assert.equal(done.result.attempts[0].step.model,'sonnet');
-  const m=s.metrics(task.id);assert.equal(m[0].model,'claude:sonnet');assert.equal(m[0].input_tokens,1200);assert.equal(m[0].output_tokens,300);
+  assert.equal(done.result.attempts.length,1);assert.equal(done.result.attempts[0].step.model,'haiku');
+  const m=s.metrics(task.id);assert.equal(m[0].model,'claude:haiku');assert.equal(m[0].input_tokens,1200);assert.equal(m[0].output_tokens,300);
   assert.ok(done.result.headline.split(/\s+/).length<=10);
   const report=s.db.prepare('SELECT file FROM reports WHERE task=?').get(task.id).file;
   assert.equal(fs.readFileSync(report,'utf8').split('\n')[0],done.result.headline+'.');
@@ -210,7 +210,7 @@ test('implementer escalates the model once when the cheap attempt fails',async t
   const {s,c,make}=orqFixture(t,{FAKE_ORQ_FAIL_FIRST:'1'});
   s.submit(make('orq-impl-002',{profile:'implementer',engine:'claude'}),'remote-orq-impl-002');
   const done=await runOne(s,c);
-  assert.deepEqual(done.result.attempts.map(a=>a.step.model),['sonnet','opus']);
+  assert.deepEqual(done.result.attempts.map(a=>a.step.model),['haiku','sonnet']);
   assert.equal(done.result.attempts[0].state,'PARTIAL_RECOVERABLE');assert.equal(done.result.attempts[1].state,'CHECKPOINTED');
 });
 test('reviewer+codex runs a review-only orq ticket with codex_first and low effort',async t=>{
@@ -222,4 +222,16 @@ test('reviewer+codex runs a review-only orq ticket with codex_first and low effo
   assert.deepEqual(done.result.reviewers,['codex']);assert.equal(done.result.review.findings[0].severity,'P2');
   assert.match(done.result.headline,/^Codex revisó la PR #7/);
   assert.equal(s.metrics(task.id)[0].model,'codex:effort-low');
+});
+
+test('a paused engine blocks the task with its reason and never relays to another paid engine',async t=>{
+  const {s,c,make}=orqFixture(t);
+  fs.writeFileSync(path.join(c.vault,'orq-engines.json'),JSON.stringify({codex:{until:new Date(Date.now()+3600e3).toISOString(),reason:'sin cuota'}}));
+  const task=s.submit(make('orq-rev-002',{profile:'reviewer',engine:'codex',pr:7}),'remote-orq-rev-002');
+  const done=await runOne(s,c);
+  assert.equal(done.state,'blocked');assert.equal(done.result.reason,'engine_unavailable');assert.match(done.result.error,/sin cuota hasta/);
+  assert.equal(done.result.attempts.length,0);assert.equal(s.metrics(task.id).length,0);
+  fs.writeFileSync(path.join(c.vault,'orq-engines.json'),JSON.stringify({codex:{until:new Date(Date.now()-1000).toISOString()}}));
+  s.submit(make('orq-rev-003',{profile:'reviewer',engine:'codex',pr:8}),'remote-orq-rev-003');
+  assert.equal((await runOne(s,c)).state,'completed');
 });

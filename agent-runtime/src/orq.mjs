@@ -37,11 +37,30 @@ export function orqSettings(c) {
     maxSeconds: Number(process.env.AGENT_ORQ_MAX_SECONDS ?? 2700),
     // Primero lo más barato que suele bastar; un solo escalón si falla.
     ladder: {
-      claude: [{ model: 'sonnet' }, { model: 'opus' }],
+      // objetivo.md: Haiku por defecto, Sonnet si no basta; Opus nunca en automático.
+      claude: [{ model: 'haiku' }, { model: 'sonnet' }],
       codex: [{ effort: 'low' }, { effort: 'medium' }],
     },
     maxOpenPrs: 2,
+    engines: engineAvailability(c),
   };
+}
+
+// Motores activables por configuración: AGENT_ORQ_ENGINES="claude,codex" y <vault>/orq-engines.json
+// {"codex":{"enabled":false,"until":"2026-11-05T04:20:00+01:00","reason":"sin cuota"}}. Sin relevo a otro motor de pago.
+export function engineAvailability(c, now = Date.now()) {
+  const listed = (process.env.AGENT_ORQ_ENGINES ?? 'claude,codex').split(',').map(x => x.trim()).filter(Boolean);
+  let file = {};
+  try { file = JSON.parse(fs.readFileSync(path.join(c.vault, 'orq-engines.json'), 'utf8')); } catch { /* sin archivo: todo según la variable */ }
+  const out = {};
+  for (const e of ORQ_ENGINES) {
+    const f = file[e] ?? {};
+    const until = f.until ? Date.parse(f.until) : NaN;
+    const paused = Number.isFinite(until) && until > now;
+    const enabled = listed.includes(e) && f.enabled !== false && !paused;
+    out[e] = { enabled, until: paused ? new Date(until).toISOString() : null, reason: enabled ? null : (paused ? `${f.reason ?? 'en pausa'} hasta ${f.until}` : (f.reason ?? 'desactivado por configuración')) };
+  }
+  return out;
 }
 
 const cleanFile = p => {
@@ -106,7 +125,8 @@ function openPrCount(repo) {
 }
 
 function prepareWorktree(c, task, repoPath) {
-  const root = path.join(c.vault, 'worktrees', `orq-${task.id}`);
+  // Nombre corto: los snapshots de orq anidan rutas largas y Windows corta en 260 caracteres.
+  const root = path.join(c.vault, 'worktrees', `orq-${task.id.slice(0, 8)}`);
   const branch = `orq/${task.spec.key}`.slice(0, 100);
   if (!fs.existsSync(root)) git(repoPath, ['worktree', 'add', '-q', '-B', branch, root, task.spec.baseCommit]);
   if (git(root, ['rev-parse', '--show-toplevel']).replaceAll('\\', '/').toLowerCase() !== root.replaceAll('\\', '/').toLowerCase()) throw Error('Wrong worktree');
@@ -155,6 +175,16 @@ function readTicket(root, id) {
 // Ejecuta un encargo claude/codex de principio a fin. ctx viene de runOne (lease, eventos y límites).
 export async function runOrqTask(store, c, task, ctx) {
   const o = orqSettings(c), spec = task.spec, started = Date.now();
+  const avail = o.engines[spec.engine];
+  if (!avail?.enabled) {
+    // La cola no se para: el encargo queda bloqueado con el motivo y Fox decide (sin relevo silencioso).
+    const result = { engine: spec.engine, attempts: [], branch: null, elapsed_ms: 0, metrics: [], reason: 'engine_unavailable',
+      error: `Motor ${spec.engine} no disponible: ${avail?.reason ?? 'desconocido'}. No se pasa a otro motor de pago sin orden de Fox.`,
+      headline: `${engineName(spec.engine)} no disponible; ${spec.key} queda bloqueado` };
+    store.event(task.id, 'engine_unavailable', { engine: spec.engine, reason: avail?.reason });
+    result.report_md = reportMd(spec, result, null);
+    return { state: 'blocked', result };
+  }
   if (!fs.existsSync(o.script)) throw Error(`orq not found at ${o.script} (set AGENT_ORQ_SCRIPT)`);
   const repoPath = o.repos[spec.repo];
   if (!repoPath) throw Error(`repo ${spec.repo} has no local clone`);

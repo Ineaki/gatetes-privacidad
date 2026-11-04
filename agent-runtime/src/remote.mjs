@@ -8,6 +8,9 @@ import { routeEngine, parseOrqInstruction } from './orq.mjs';
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
 const git = (repo,args) => execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:1_000_000,stdio:['ignore','pipe','pipe']}).trim();
 const writeChanged = (file,body) => {fs.mkdirSync(path.dirname(file),{recursive:true});if(!fs.existsSync(file)||fs.readFileSync(file,'utf8')!==body) fs.writeFileSync(file,body,{mode:0o600});};
+// El rebase recrea el commit de sync si Fox subió algo antes: necesita identidad o se queda a medias.
+const ID=['-c','user.name=Gatetes Local','-c','user.email=gatetes-local@users.noreply.github.com'];
+const pull = remote => git(remote,[...ID,'pull','-q','--rebase','origin','main']);
 const push = remote => git(remote,['-c','credential.helper=','-c','credential.helper=!gh auth git-credential','push','origin','main']);
 export const keyPattern=/^[a-z0-9][a-z0-9._-]{2,79}$/i;
 
@@ -64,7 +67,7 @@ const latestReport=(store,id)=>store.db.prepare('SELECT id FROM reports WHERE ta
 
 export function syncRemote(store,c,remote) {
   if(!remote||!fs.existsSync(path.join(remote,'.git'))) throw Error('Private remote checkout required');
-  git(remote,['pull','-q','--rebase','origin','main']);
+  pull(remote);
   c.repoName??=repoName(c.repo);
   const inbox=path.join(remote,'inbox'),receipts=path.join(remote,'receipts');
   fs.mkdirSync(inbox,{recursive:true});fs.mkdirSync(receipts,{recursive:true});
@@ -128,6 +131,6 @@ export function syncRemote(store,c,remote) {
     git(remote,['reset','-q']);throw Error('Refusing to sync: staged mirror contains a forbidden file or credential-like value');
   }
   git(remote,['-c','user.name=Gatetes Local','-c','user.email=gatetes-local@users.noreply.github.com','commit','-q','-m','Sync local agent activity']);
-  try { push(remote); } catch { git(remote,['pull','-q','--rebase','origin','main']); push(remote); }
+  try { push(remote); } catch { pull(remote); push(remote); }
   return {tasks:tasks.length,pushed:true};
 }
