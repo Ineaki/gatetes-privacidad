@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { safeFile, git } from './workspace.mjs';
 import { simulatedToolCall } from './guard.mjs';
+export { REVIEW_VERSION } from './guard.mjs';
 
 // Review profiles get their evidence from the orchestrator; the model never needs to call tools.
 export const reviewProfiles = ['reviewer', 'checker'];
@@ -20,8 +21,9 @@ export function reviewSchema(criteria = []) {
       file: text(120), line: { type: 'integer' }, quote: text(120), observation: text(300) } } } } };
   if (criteria.length) {
     schema.required.push('criteria');
-    schema.properties.criteria = { type: 'array', minItems: criteria.length, maxItems: criteria.length, items: { type: 'object', required: ['criterion', 'met', 'evidence'], properties: {
-      criterion: text(300), met: { type: 'string', enum: ['yes', 'no', 'unknown'] }, evidence: text(500) } } };
+    schema.properties.criteria = { type: 'array', minItems: criteria.length, maxItems: criteria.length, items: { type: 'object', required: ['criterion', 'answer', 'met', 'file', 'line', 'quote', 'evidence'], properties: {
+      criterion: text(300), answer: text(300), met: { type: 'string', enum: ['yes', 'no', 'unknown'] },
+      file: text(120), line: { type: 'integer' }, quote: text(160), evidence: text(400) } } };
   }
   return schema;
 }
@@ -67,15 +69,22 @@ export function buildEvidence(root, spec, budgetBytes) {
 }
 
 const norm = s => String(s).replace(/\s+/g, ' ').trim();
-// A finding counts only if its quote really appears within 3 lines of the cited line.
+const squash = s => String(s).replace(/\s+/g, '');
+// A cited point counts only if its quote really exists in the file. Whitespace and line breaks are ignored;
+// a quote found uniquely at another line is accepted and the line is corrected (small models miscount lines).
 function grounded(root, spec, item) {
   if (!spec.files.includes(item.file)) return `file ${item.file} not in allowlist`;
   const lines = fs.readFileSync(safeFile(root, item.file, spec.files), 'utf8').split('\n');
-  if (!Number.isInteger(item.line) || item.line < 1 || item.line > lines.length) return `${item.file}:${item.line} out of range (1-${lines.length})`;
-  const quote = norm(item.quote);
+  const quote = squash(item.quote);
   if (quote.length < 6) return `${item.file}:${item.line} quote too short`;
-  const window = norm(lines.slice(Math.max(0, item.line - 4), item.line + 3).join(' '));
-  return window.includes(quote) ? null : `${item.file}:${item.line} quote not found near that line`;
+  // A quote starts at line i when it is inside lines i..i+3 but not inside i+1..i+4.
+  const at = i => squash(lines.slice(i, i + 4).join('')).includes(quote);
+  const starts = lines.map((_, i) => i).filter(i => at(i) && !at(i + 1)).map(i => i + 1);
+  const near = starts.filter(s => Math.abs(s - item.line) <= 3);
+  const pick = near.length === 1 ? near[0] : (!near.length && starts.length === 1 ? starts[0] : null);
+  if (pick === null) return `${item.file}:${item.line} quote ${starts.length ? 'ambiguous' : 'not found'} in file`;
+  if (pick !== item.line) { item.cited_line = item.line; item.line = pick; }
+  return null;
 }
 
 export function assessReview(root, spec, content) {
@@ -95,7 +104,10 @@ export function assessReview(root, spec, content) {
   if (spec.criteria?.length) {
     const answered = Array.isArray(r.criteria) ? r.criteria : [];
     if (answered.length !== spec.criteria.length) reasons.push(`answered ${answered.length}/${spec.criteria.length} acceptance criteria`);
-    if (answered.some(a => norm(a.evidence).length < 15)) reasons.push('criterion without evidence');
+    for (const a of answered) {
+      if (norm(a.evidence).length < 15) reasons.push('criterion without evidence');
+      const bad = grounded(root, spec, a); if (bad) reasons.push(`criterion evidence ${bad}`);
+    }
   }
   for (const t of spec.testResults ?? []) if (t.exit !== 0 && r.verdict === 'no_issues') reasons.push(`verdict "no_issues" although ${t.path} failed`);
   return { ok: !reasons.length, reasons: [...new Set(reasons)].slice(0, 8), review: r };
@@ -126,7 +138,9 @@ export function reviewMarkdown(spec, review, tests, coverage) {
   for (const f of review.findings) lines.push(`- [${f.severity}] \`${f.file}:${f.line}\` — ${f.issue}`);
   lines.push('', '**Puntos comprobados:**');
   for (const c of review.checked) lines.push(`- \`${c.file}:${c.line}\` — ${c.observation}`);
-  if (review.criteria?.length) { lines.push('', '**Criterios de aceptación:**'); for (const a of review.criteria) lines.push(`- ${a.met}: ${a.criterion} — ${a.evidence}`); }
+  if (review.criteria?.length) { lines.push('', '**Criterios de aceptación:**'); for (const a of review.criteria) lines.push(`- ${a.criterion} → **${a.answer}** (${a.met}) — \`${a.file}:${a.line}\` ${a.evidence}`); }
+  const moved = [...review.findings, ...review.checked, ...(review.criteria ?? [])].filter(x => x.cited_line);
+  if (moved.length) lines.push('', `_Líneas corregidas por el verificador (cita encontrada en otra línea): ${moved.map(x => `${x.cited_line}→${x.line}`).join(', ')}._`);
   lines.push('', `**Cobertura del contexto:** ${coverage.map(c => `${c.file}${c.included ? (c.truncated ? ' (truncado)' : '') : ' (no incluido)'}`).join(', ')}`);
   return lines.join('\n');
 }

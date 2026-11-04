@@ -84,6 +84,7 @@ try {
   } else if(command==='serve') await serve();
   else if(command==='status') console.log(JSON.stringify(read(),null,2));
   else if(command==='start') {const s=read();if(s.status==='running') throw Error('Already running');s.status='running';delete s.error;save(s);record('campaign_resumed',{index:s.index});console.log('Campaign set to running.');}
+  else if(command==='block') {const s=read();const reason=process.argv.slice(3).join(' ').trim();if(!reason) throw Error('Reason required');s.status='blocked';s.error=reason.slice(0,500);save(s);record('campaign_blocked',{error:s.error,by:'operator'});console.log('Campaign blocked.');}
   else if(command==='pause') {const s=read();s.status='paused';save(s);record('campaign_paused',{index:s.index});console.log('Campaign paused.');}
   else throw Error('Use init seed.json | start | pause | serve | status');
 } catch(e) {console.error(e.message);process.exitCode=1;}

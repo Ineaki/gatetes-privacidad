@@ -116,7 +116,7 @@ test('remote inbox round trip: receipt, local execution, report and private push
   syncRemote(s,c,mirror);
   let receipt=JSON.parse(fs.readFileSync(path.join(mirror,'receipts/sintetica-001.json'),'utf8'));
   assert.equal(receipt.status,'accepted');assert.equal(receipt.state,'queued');
-  const review=JSON.parse(goodReview);review.criteria=[{criterion:'DPI',met:'no',evidence:'app/caida.py:2 compares against a fixed 40.'}];
+  const review=JSON.parse(goodReview);review.criteria=[{criterion:'DPI',answer:'No, es un valor fijo',met:'no',file:'app/caida.py',line:2,quote:'if altura > 40:',evidence:'Compares against a fixed 40 without DPI.'}];
   const done=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(review)}})});
   assert.equal(done.state,'completed');
   syncRemote(s,c,mirror);
@@ -127,4 +127,10 @@ test('remote inbox round trip: receipt, local execution, report and private push
   fs.writeFileSync(path.join(mirror,'inbox/nube-001.json'),JSON.stringify({...instruction,key:'nube-001',task:{...instruction.task,engine:'codex'}}));
   syncRemote(s,c,mirror);
   assert.match(JSON.parse(fs.readFileSync(path.join(mirror,'receipts/nube-001.json'),'utf8')).reason,/not local/);
+});
+test('grounding ignores line breaks and corrects a miscounted line, but rejects invented quotes',async t=>{
+  const {s,c}=fixture(t);s.submit(reviewSpec());
+  const r=JSON.parse(goodReview);r.checked[0]={file:'app/caida.py',line:1,quote:'if altura > 40: return "paracaidas"',observation:'Two-line quote cited at the wrong line.'};
+  const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'completed');assert.equal(result.result.review.checked[0].line,2);assert.match(result.result.report_md,/1→2/);
 });

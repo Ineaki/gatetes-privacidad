@@ -21,9 +21,11 @@ export function simulatedToolCall(text) {
 const stable = v => JSON.stringify(v, Object.keys(v).sort());
 export const sha = v => createHash('sha256').update(typeof v === 'string' ? v : stable(v)).digest('hex');
 export const normalizeGoal = g => String(g).toLowerCase().replace(/\s+/g, ' ').trim();
-// Same profile, goal, files, tests and exact file contents means the same microtask.
+// Bump when review validation changes: a retry under new rules is not a repeated microtask.
+export const REVIEW_VERSION = 2;
+// Same profile, goal, files, tests, exact file contents and validation rules means the same microtask.
 export function fingerprint(spec, blobs) {
-  return sha(JSON.stringify([spec.profile, normalizeGoal(spec.goal), spec.files, spec.tests ?? [], spec.criteria ?? [], spec.diffBase ?? null, blobs]));
+  return sha(JSON.stringify([spec.profile, normalizeGoal(spec.goal), spec.files, spec.tests ?? [], spec.criteria ?? [], spec.diffBase ?? null, blobs, REVIEW_VERSION]));
 }
 
 const secretPatterns = [
