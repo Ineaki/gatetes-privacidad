@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildContext } from './context.mjs';
 import { taskWorkspace, reconcile, readFile, writeFile, checkSyntax, verify, fileHash, safeFile } from './workspace.mjs';
+import { simulatedToolCall, machineLock, sha } from './guard.mjs';
+import { reviewProfiles, reviewSchema, reviewMessages, correction, buildEvidence, assessReview, runTests, reviewMarkdown } from './review.mjs';
 
 const tool=(name,description,properties,required)=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
 const str={type:'string'};
 export function toolsFor(profile) {
+  if(reviewProfiles.includes(profile)) return [];
   const list=[tool('read_file','Read allowed file lines and SHA256. Missing file returns hash null.',{path:str,start:{type:'integer'},end:{type:'integer'}},['path']),
     tool('check_syntax','Check JavaScript syntax without executing the file.',{path:str},['path'])];
   if(profile==='coder') list.push(tool('write_file','Replace a small allowed text file; expected_hash must be its last read hash, or null for a new file.',{path:str,expected_hash:{type:['string','null']},text:str},['path','expected_hash','text']));
@@ -19,34 +22,49 @@ export async function ollamaChat(c,body,signal) {
   const text=await response.text(); if(text.length>200000) throw Error('Model response too large');
   return JSON.parse(text);
 }
+// Thrown when the model's answer is not a usable result; the task blocks with this explicit reason.
+class Unusable extends Error {}
+
 export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController().signal}={}) {
-  const owner=randomUUID(), task=store.acquire(owner);
-  if(!task) return null;
+  const unlock=machineLock(c.lockDir);
+  if(!unlock) return null;
+  const owner=randomUUID();
+  let task;
+  try { task=store.acquire(owner); } catch(e) { unlock(); throw e; }
+  if(!task) { unlock(); return null; }
   const controller=new AbortController(), combined=AbortSignal.any([signal,controller.signal]);
-  const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null;
+  const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null, reprompted=task.checkpoint.reprompted??false;
   const elapsed=()=>task.elapsed+Date.now()-started;
   const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=c.maxSeconds*1000) throw Error('Task time limit'); };
   const heartbeat=setInterval(()=>{try{store.heartbeat(task);}catch{controller.abort();}},Math.max(50,Math.floor(c.leaseMs/3)));
   const cancelWatch=setInterval(()=>{if(store.get(task.id)?.state!=='running') controller.abort();},200);
   const deadline=setTimeout(()=>controller.abort(),Math.max(1,c.maxSeconds*1000-task.elapsed));
-  const checkpoint=()=>store.checkpoint(task,{ workspace:root, branch:`agent/task-${task.id}`, last:compactLast(last),
+  const checkpoint=()=>store.checkpoint(task,{ workspace:root, branch:`agent/task-${task.id}`, last:compactLast(last), reprompted,
     hashes:root?Object.fromEntries(task.spec.files.map(p=>{try{return [p,fileHash(safeFile(root,p,task.spec.files))];}catch{return [p,'unavailable'];}})):{}, next:'Resume from current files; do not repeat verified operations.' },steps,elapsed());
+  // Every model call is kept whole in the private vault; only a digest goes into events.
+  const callModel=async(body)=>{
+    guard(); const requestStart=Date.now(); steps++; checkpoint(); // Failed/aborted requests still consume a step.
+    let response;
+    try { response=await chat(c,body,combined); }
+    catch(e){store.metric(task.id,{run_id:owner,model:c.model,input_tokens:null,output_tokens:null,duration_ms:Date.now()-requestStart,error:String(e.message).slice(0,300),cloud:false});store.event(task.id,'model_error',{step:steps,error:String(e.message).slice(0,300)});throw e;}
+    guard();
+    const content=String(response.message?.content??'');
+    const dir=path.join(c.vault,'evidence',task.id); fs.mkdirSync(dir,{recursive:true});
+    const file=path.join(dir,`call-${String(steps).padStart(2,'0')}.json`);
+    fs.writeFileSync(file,JSON.stringify({at:new Date().toISOString(),request:body,response:{content,tool_calls:response.message?.tool_calls??null,done_reason:response.done_reason??null}},null,2),{mode:0o600});
+    store.metric(task.id,{run_id:owner,model:c.model,input_tokens:response.prompt_eval_count??null,output_tokens:response.eval_count??null,duration_ms:Date.now()-requestStart,cloud:false});
+    store.event(task.id,'model_call',{step:steps,model:c.model,prompt_sha:sha(JSON.stringify(body.messages)),response_sha:sha(content),tool_calls:response.message?.tool_calls?.length??0,excerpt:content.slice(0,400),evidence:path.basename(file)});
+    return response;
+  };
   try {
     guard(); root=taskWorkspace(c,task); reconcile(store,task,root); checkpoint();
+    if(reviewProfiles.includes(task.spec.profile)) return await review();
     const tools=toolsFor(task.spec.profile);
     const memory=store.memory(task.spec.goal,root,task.spec.files);
     while(steps<c.maxSteps) {
       guard(); task.checkpoint=store.get(task.id).checkpoint;
       const context=buildContext(c,task,tools,memory,history);
-      const requestStart=Date.now();
-      steps++; checkpoint(); // Failed/aborted requests still consume a step.
-      let response;
-      try {
-        response=await chat(c,{model:c.model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}},combined);
-      }catch(e){store.metric(task.id,{run_id:owner,model:c.model,estimated_input:context.estimatedInput,input_tokens:null,output_tokens:null,duration_ms:Date.now()-requestStart,error:String(e.message).slice(0,300),cloud:false});throw e;}
-      guard();
-      store.metric(task.id,{run_id:owner,model:c.model,estimated_input:context.estimatedInput,estimate_method:context.estimateMethod,
-        input_tokens:response.prompt_eval_count??null,output_tokens:response.eval_count??null,duration_ms:Date.now()-requestStart,retrieved:context.retrieved,cloud:false});
+      const response=await callModel({model:c.model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
       const msg=response.message;
       if(!msg||typeof msg!=='object') throw Error('Invalid model message');
       // Hidden reasoning is never persisted or returned to another model.
@@ -54,7 +72,13 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
       if(msg.tool_calls?.length) clean.tool_calls=msg.tool_calls;
       if(response.done_reason==='length') throw Error('Output limit reached; task needs splitting');
       if(!clean.tool_calls?.length) {
-        if(!clean.content.trim()) throw Error('Empty model result');
+        if(!clean.content.trim()) throw new Unusable('Empty model result');
+        const fake=simulatedToolCall(clean.content);
+        if(fake) {
+          store.event(task.id,'simulated_tool_call',{step:steps,excerpt:fake.excerpt,reprompted});
+          if(reprompted) throw new Unusable(`Model wrote tool calls as text twice instead of calling them; no review was produced (${fake.excerpt.slice(0,160)})`);
+          reprompted=true; history.push(clean,{role:'user',content:correction(['it contained tool calls written as plain text'])}); checkpoint(); continue;
+        }
         const assertions=verify(root,task.spec);
         const checks=[];
         for(const p of task.spec.files.filter(p=>/\.(mjs|cjs|js)$/.test(p))) {
@@ -95,12 +119,46 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   } catch(e) {
     const row=store.get(task.id);
     if(row?.state==='running'&&row.generation===task.generation&&row.owner===owner) {
-      try { checkpoint(); store.finish(task,'blocked',{error:String(e.message).slice(0,2000),workspace:root,steps,elapsed_ms:elapsed(),next:'Inspect evidence; create a smaller follow-up task or explicitly resume.'}); } catch { /* Lost lease: fenced executor must not publish a result. */ }
+      const reason=e instanceof Unusable?'unusable_result':'error';
+      try { store.event(task.id,'blocked',{reason,error:String(e.message).slice(0,500)}); checkpoint(); store.finish(task,'blocked',{error:String(e.message).slice(0,2000),reason,workspace:root,steps,elapsed_ms:elapsed(),next:'Inspect evidence; create a smaller follow-up task or explicitly resume.'}); } catch { /* Lost lease: fenced executor must not publish a result. */ }
     }
     return store.get(task.id);
   } finally {
-    clearInterval(heartbeat); clearInterval(cancelWatch); clearTimeout(deadline); controller.abort(); store.release(owner);
+    clearInterval(heartbeat); clearInterval(cancelWatch); clearTimeout(deadline); controller.abort(); store.release(owner); unlock();
     store.flushReports();
+  }
+
+  // Review/check: the orchestrator runs tests and reads files; the model only judges evidence it was given.
+  async function review() {
+    const spec={...task.spec};
+    guard(); spec.testResults=runTests(c,root,spec);
+    for(const t of spec.testResults) store.event(task.id,'test',{path:t.path,exit:t.exit,tail:t.output.split('\n').slice(-2).join(' ').slice(0,300)});
+    guard();
+    const budget=Math.floor((c.context-c.output-c.margin-600)*2.5);
+    const evidence=buildEvidence(root,spec,budget);
+    store.event(task.id,'evidence',{coverage:evidence.coverage});
+    const schema=reviewSchema(spec.criteria??[]);
+    const messages=reviewMessages(spec,evidence);
+    for(let attempt=0;;attempt++) {
+      if(steps>=c.maxSteps) throw Error('Task step limit');
+      const response=await callModel({model:c.model,messages,stream:false,think:false,format:schema,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
+      if(response.done_reason==='length') throw new Unusable('Output limit reached before the review JSON was complete');
+      const content=String(response.message?.content??'');
+      const verdict=response.message?.tool_calls?.length?{ok:false,retryable:true,reasons:['reply requested tools, which this profile does not have']}:assessReview(root,spec,content);
+      store.event(task.id,'assessment',{step:steps,ok:verdict.ok,retryable:verdict.retryable,reasons:verdict.reasons});
+      if(verdict.ok) {
+        const tests=spec.testResults, failed=tests.filter(t=>t.exit!==0);
+        const report=reviewMarkdown(spec,verdict.review,tests,evidence.coverage);
+        const result={summary:verdict.review.summary,summary_source:'model_review_grounded_in_files',review:verdict.review,report_md:report,tests,coverage:evidence.coverage,
+          acceptance:failed.length?'tests_failed':'grounded_review',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:c.model,metrics:store.metrics(task.id)};
+        checkpoint(); store.finish(task,failed.length?'blocked':'completed',result);
+        return store.get(task.id);
+      }
+      if(!verdict.retryable) throw new Unusable(`Review rejected for wrong evidence (not re-asked: repeating the query returns the same citation): ${verdict.reasons.join('; ')}`);
+      if(attempt>=1||reprompted) throw new Unusable(`Review rejected after one bounded retry: ${verdict.reasons.join('; ')}`);
+      reprompted=true; checkpoint();
+      messages.push({role:'assistant',content:content.slice(0,4000)},{role:'user',content:correction(verdict.reasons)});
+    }
   }
 }
 function compactLast(last) {

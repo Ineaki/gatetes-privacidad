@@ -1,0 +1,37 @@
+{
+  "id": "gatetes-pending-prs-2026-11-03",
+  "jobs": [
+    {
+      "pr": 34,
+      "baseCommit": "39cdbc78fd7f6a204f94a7891697ac99f12142c9",
+      "objective": "Review the parachute-after-drag fix and its focused regression test. Determine whether the cat always starts a visible fall at different heights and DPI. Report exact findings; do not merge or claim an unrun check.",
+      "files": ["mascota_py/gatetes/cerebro.py", "mascota_py/tests/test_caida_arrastre.py"],
+      "test": "tests/test_caida_arrastre.py",
+      "maxSteps": 3
+    },
+    {
+      "pr": 32,
+      "baseCommit": "35b80b67322aa564cbe6457061ab55bdaa913f2c",
+      "objective": "Review the installer staging fix for 56 new groom_leg frames. Dani IA revalidated commit 35b80b6 technically. Check the staging copy and focused test. Record that 5 additional pelages may still show old frames; do not regenerate binary images through text tools.",
+      "files": ["instalador/preparar_runtime.py", "mascota_py/tests/test_instalador_posturas.py"],
+      "test": "tests/test_instalador_posturas.py",
+      "maxSteps": 3
+    },
+    {
+      "pr": 33,
+      "baseCommit": "413884763039a0a50baa48a4032e793d34230701",
+      "objective": "Review the removal of humor/meme execution paths and the production regression test, including old saved config. Check exact code and test evidence. Report precise remaining issues only.",
+      "files": ["mascota_py/gatetes/cerebro.py", "mascota_py/tests/test_produccion.py"],
+      "test": "tests/test_produccion.py",
+      "maxSteps": 3
+    },
+    {
+      "pr": 31,
+      "baseCommit": "7be217cdbd3565ca751308a3c4bade8a6cc4aae9",
+      "objective": "Review the Fluent menu model and focused test. GitHub currently reports this PR conflicts with main. Identify the smallest necessary conflict resolution and report it; do not claim it is mergeable or merged.",
+      "files": ["mascota_py/gatetes/menu_model.py", "mascota_py/tests/test_menu_modelo.py"],
+      "test": "tests/test_menu_modelo.py",
+      "maxSteps": 3
+    }
+  ]
+}

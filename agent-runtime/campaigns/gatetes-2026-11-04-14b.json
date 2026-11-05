@@ -1,0 +1,52 @@
+{
+  "id": "gatetes-prs-2026-11-04-14b",
+  "jobs": [
+    {
+      "pr": 34,
+      "baseCommit": "39cdbc78fd7f6a204f94a7891697ac99f12142c9",
+      "objective": "Parachute after drag.",
+      "files": [
+        "mascota_py/gatetes/cerebro.py"
+      ],
+      "skip": "Validated 2026-11-04 with qwen2.5-coder:14b: 3/3 criteria with exact quotes (cerebro.py:2311, cerebro.py:619, escenario.py:92), checked by hand."
+    },
+    {
+      "pr": 32,
+      "baseCommit": "35b80b67322aa564cbe6457061ab55bdaa913f2c",
+      "objective": "Installer staging for groom_leg frames.",
+      "files": [
+        "instalador/preparar_runtime.py"
+      ],
+      "skip": "Dani IA revalidated 35b80b6 technically on 2026-11-01 (one review per PR); the installer fix must not be repeated."
+    },
+    {
+      "pr": 33,
+      "baseCommit": "413884763039a0a50baa48a4032e793d34230701",
+      "objective": "Review that humor/meme can never run in production even if an old saved config enables them. Report as findings only concrete execution paths left without the _humor_meme_off() guard.",
+      "files": [
+        "mascota_py/gatetes/cerebro.py",
+        "mascota_py/gatetes/edicion.py"
+      ],
+      "test": "tests/test_produccion.py",
+      "criteria": [
+        "¿start_mode descarta los modos retirados con `if _humor_meme_off() and md in MODOS_RETIRADOS:`?",
+        "¿humor_meme_en_ejecucion() sigue a modos_extra() con `return modos_extra()`?",
+        "¿modos_extra() está fijado en producción? Cita la función completa: `def modos_extra():` y su `return False`.",
+        "¿check_meme limpia el bocadillo y sale cuando están desactivados, con `self._limpiar_bocadillo()`?"
+      ]
+    },
+    {
+      "pr": 31,
+      "baseCommit": "7be217cdbd3565ca751308a3c4bade8a6cc4aae9",
+      "objective": "Review the Fluent menu order model in menu_model.py. This PR conflicts with main; judge only the model, not the conflict.",
+      "files": [
+        "mascota_py/gatetes/menu_model.py"
+      ],
+      "test": "tests/test_menu_modelo.py",
+      "criteria": [
+        "En ORDEN_PRINCIPAL, ¿hay un separador None justo antes de Configuración? Cita las dos líneas `None, 'ajustes'`.",
+        "En ORDEN_PRINCIPAL, ¿hay un separador None justo antes de Salir? Cita las dos líneas anteriores a `'salir'`."
+      ]
+    }
+  ]
+}

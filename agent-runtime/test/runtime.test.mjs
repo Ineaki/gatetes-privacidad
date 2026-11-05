@@ -17,7 +17,7 @@ function fixture(t,overrides={}) {
   const g=(...a)=>execFileSync('git',['-C',repo,...a],{stdio:'pipe',windowsHide:true});
   g('init');g('config','user.name','Synthetic Test');g('config','user.email','test@example.invalid');
   fs.writeFileSync(path.join(repo,'input.txt'),'original');g('add','.');g('commit','-m','fixture');
-  const c=config({repo,vault:path.join(dir,'private'),...overrides}),s=new Store(c);
+  const c=config({repo,vault:path.join(dir,'private'),lockDir:path.join(dir,'lock'),...overrides}),s=new Store(c);
   t.after(()=>{s.close();fs.rmSync(dir,{recursive:true,force:true});});
   return {c,s,repo,dir};
 }
