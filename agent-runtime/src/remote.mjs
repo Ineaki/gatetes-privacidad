@@ -112,7 +112,7 @@ export function syncRemote(store,c,remote) {
   const flat=e=>safeJson({at:new Date(e.created).toISOString(),kind:e.kind,...JSON.parse(e.body)}).trim().replace(/\n\s*/g,'');
   const campaignEvents=store.db.prepare('SELECT kind,body,created FROM events WHERE task IS NULL ORDER BY created,id').all();
   writeChanged(path.join(remote,'campaign-events.jsonl'),campaignEvents.map(flat).join('\n')+'\n');
-  writeChanged(path.join(remote,'status.json'),safeJson({updatedAt:new Date().toISOString(),worker:'local-ollama+orq',model:c.model,
+  writeChanged(path.join(remote,'status.json'),safeJson({updatedAt:new Date().toISOString(),worker:'local-ollama+orq',model:c.model,models:c.models,
     tasks:tasks.map(t=>{const row=store.get(t.id);return {id:t.id,key:row.key,state:t.state,profile:row.spec.profile,engine:row.spec.engine??'ollama',steps:t.steps,attempts:t.attempts,updated:new Date(t.updated).toISOString(),verdict:row.result?.review?.verdict,reason:row.result?.error?.slice(0,200)};})}));
   for(const t of tasks) {
     const row=store.get(t.id), r=row.result;
