@@ -140,7 +140,9 @@ export class Store {
       if (!fs.existsSync(r.file)) {
         const parsed=JSON.parse(r.body), outcome=parsed.result?.report_md??parsed.result?.error;
         const head=outcome?`## Resultado: ${parsed.status}\n\n${outcome}\n\n## Registro completo\n\n`:'';
-        const body=`# Activity ${r.id}\n\nTask: ${r.task}\nDate: ${new Date(r.created).toISOString()}\n\n${head}\`\`\`json\n${r.body}\n\`\`\`\n`;
+        // Reglas de consumo: cada informe empieza con una frase corta que dice qué se hizo.
+        const headline=parsed.result?.headline??({completed:'Encargo terminado',blocked:'Encargo bloqueado',failed:'Encargo fallido',cancelled:'Encargo cancelado'}[parsed.status]??'Actividad registrada');
+        const body=`${headline}.\n\n# Activity ${r.id}\n\nTask: ${r.task}\nDate: ${new Date(r.created).toISOString()}\n\n${head}\`\`\`json\n${r.body}\n\`\`\`\n`;
         fs.writeFileSync(r.file,body,{flag:'wx',mode:0o600});
       }
       this.db.prepare('INSERT OR IGNORE INTO exported_reports VALUES(?)').run(r.id);

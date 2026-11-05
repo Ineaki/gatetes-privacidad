@@ -4,6 +4,8 @@ import path from 'node:path';
 import { buildContext } from './context.mjs';
 import { taskWorkspace, reconcile, readFile, writeFile, checkSyntax, verify, fileHash, safeFile } from './workspace.mjs';
 import { simulatedToolCall, machineLock, sha } from './guard.mjs';
+import { runOrqTask, orqSettings, ORQ_ENGINES } from './orq.mjs';
+import { runDeterministic } from './deterministic.mjs';
 import { reviewProfiles, reviewSchema, reviewMessages, correction, buildEvidence, assessReview, runTests, reviewMarkdown } from './review.mjs';
 
 const tool=(name,description,properties,required)=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
@@ -34,11 +36,12 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   if(!task) { unlock(); return null; }
   const controller=new AbortController(), combined=AbortSignal.any([signal,controller.signal]);
   const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null, reprompted=task.checkpoint.reprompted??false;
+  const isOrq=ORQ_ENGINES.includes(task.spec.engine), maxSeconds=isOrq?orqSettings(c).maxSeconds:c.maxSeconds;
   const elapsed=()=>task.elapsed+Date.now()-started;
-  const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=c.maxSeconds*1000) throw Error('Task time limit'); };
+  const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=maxSeconds*1000) throw Error('Task time limit'); };
   const heartbeat=setInterval(()=>{try{store.heartbeat(task);}catch{controller.abort();}},Math.max(50,Math.floor(c.leaseMs/3)));
   const cancelWatch=setInterval(()=>{if(store.get(task.id)?.state!=='running') controller.abort();},200);
-  const deadline=setTimeout(()=>controller.abort(),Math.max(1,c.maxSeconds*1000-task.elapsed));
+  const deadline=setTimeout(()=>controller.abort(),Math.max(1,maxSeconds*1000-task.elapsed));
   const checkpoint=()=>store.checkpoint(task,{ workspace:root, branch:`agent/task-${task.id}`, last:compactLast(last), reprompted,
     hashes:root?Object.fromEntries(task.spec.files.map(p=>{try{return [p,fileHash(safeFile(root,p,task.spec.files))];}catch{return [p,'unavailable'];}})):{}, next:'Resume from current files; do not repeat verified operations.' },steps,elapsed());
   // Every model call is kept whole in the private vault; only a digest goes into events.
@@ -57,6 +60,13 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     return response;
   };
   try {
+    if(isOrq) {
+      // Claude/Codex vía orq: el proceso corre en segundo plano y el lease se mantiene con el heartbeat.
+      let orqData={};
+      const done=await runOrqTask(store,c,task,{guard,signal:combined,setRoot:r=>{root=r;},checkpoint:data=>{orqData=data;store.checkpoint(task,{workspace:root,branch:`orq/${task.spec.key}`,...data},steps,elapsed());}});
+      store.finish(task,done.state,{...done.result,steps,elapsed_ms:elapsed()});
+      return store.get(task.id);
+    }
     guard(); root=taskWorkspace(c,task); reconcile(store,task,root); checkpoint();
     if(reviewProfiles.includes(task.spec.profile)) return await review();
     const tools=toolsFor(task.spec.profile);
@@ -131,6 +141,18 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   // Review/check: the orchestrator runs tests and reads files; the model only judges evidence it was given.
   async function review() {
     const spec={...task.spec};
+    if(spec.deterministic) {
+      // Solo pytest: sin modelo, sin citas; el resultado es la salida real del comando.
+      guard(); const t0=Date.now();
+      const det=await runDeterministic(c,root,spec,combined);
+      for(const t of det.results) store.event(task.id,'test',{path:t.path,exit:t.exit,tail:t.output.split('\n').slice(-2).join(' ').slice(0,300)});
+      store.metric(task.id,{run_id:owner,model:'ninguno (pytest en el PC)',input_tokens:0,output_tokens:0,duration_ms:Date.now()-t0,cloud:false});
+      guard(); checkpoint();
+      const result={headline:det.headline,summary:det.headline,summary_source:'deterministic_command_output',report_md:det.report_md,tests:det.results.map(r=>({path:r.path,exit:r.exit,output:r.output})),
+        acceptance:det.ok?'tests_passed':'tests_failed',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:'ninguno',metrics:store.metrics(task.id)};
+      store.finish(task,det.ok?'completed':'blocked',det.ok?result:{...result,error:det.headline,reason:'tests_failed'});
+      return store.get(task.id);
+    }
     guard(); spec.testResults=runTests(c,root,spec);
     for(const t of spec.testResults) store.event(task.id,'test',{path:t.path,exit:t.exit,tail:t.output.split('\n').slice(-2).join(' ').slice(0,300)});
     guard();

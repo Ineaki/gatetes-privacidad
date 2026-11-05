@@ -3,21 +3,28 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { validateSpec } from './workspace.mjs';
 import { scrub, containsSecret } from './guard.mjs';
+import { routeEngine, parseOrqInstruction } from './orq.mjs';
+import { detectDeterministic } from './deterministic.mjs';
 
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
 const git = (repo,args) => execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:1_000_000,stdio:['ignore','pipe','pipe']}).trim();
 const writeChanged = (file,body) => {fs.mkdirSync(path.dirname(file),{recursive:true});if(!fs.existsSync(file)||fs.readFileSync(file,'utf8')!==body) fs.writeFileSync(file,body,{mode:0o600});};
+// El rebase recrea el commit de sync si Fox subió algo antes: necesita identidad o se queda a medias.
+const ID=['-c','user.name=Gatetes Local','-c','user.email=gatetes-local@users.noreply.github.com'];
+const pull = remote => git(remote,[...ID,'pull','-q','--rebase','origin','main']);
 const push = remote => git(remote,['-c','credential.helper=','-c','credential.helper=!gh auth git-credential','push','origin','main']);
 export const keyPattern=/^[a-z0-9][a-z0-9._-]{2,79}$/i;
 
-// Grok Bot / Fox contract (conocimiento/protocolo.md), restricted to what runs locally on Ollama.
-export function parseInstruction(value,c,resolveCommit) {
+// Grok Bot / Fox contract (conocimiento/protocolo.md): checker/ollama locally, implementer+claude and reviewer+codex through orq.
+export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver) {
   if(!value||value.kind!=='task'||typeof value.key!=='string'||!keyPattern.test(value.key)) throw Error('Expected {"kind":"task","key":"<3-80 chars a-z0-9._->"}');
   const t=value.task;
   if(!t||typeof t!=='object') throw Error('Missing task object');
-  if(t.engine!==undefined&&t.engine!=='ollama') throw Error(`engine "${t.engine}" is not local; only "ollama" (or no engine) is accepted`);
+  if(t.engine!==undefined&&!['ollama','claude','codex'].includes(t.engine)) throw Error(`engine "${t.engine}" not accepted; use "claude", "codex" or "ollama"`);
+  const route=routeEngine(t.profile,t.engine);
+  if(route!=='ollama') return parseOrqInstruction(value,c,route,resolveFor);
   const profile={reviewer:'reviewer',checker:'checker'}[t.profile];
-  if(!profile) throw Error(`profile "${t.profile}" not accepted; use "reviewer" or "checker" (implementer needs a cloud engine)`);
+  if(!profile) throw Error(`profile "${t.profile}" not accepted; use "reviewer" or "checker"`);
   if(typeof t.goal!=='string'||t.goal.trim().length<20||t.goal.length>1000) throw Error('goal must be 20-1000 characters');
   if(!Array.isArray(t.files)||t.files.length<1||t.files.length>4) throw Error('files must list 1-4 explicit paths');
   if(!Array.isArray(t.acceptance)||t.acceptance.length<1||t.acceptance.length>5) throw Error('acceptance must list 1-5 criteria');
@@ -32,6 +39,9 @@ export function parseInstruction(value,c,resolveCommit) {
   if(t.pr!==undefined&&(!Number.isInteger(t.pr)||t.pr<1)) throw Error('pr must be a positive integer');
   if(t.branch!==undefined&&(typeof t.branch!=='string'||!/^[\w./-]{1,120}$/.test(t.branch)||t.branch.includes('..'))) throw Error('invalid branch name');
   const {baseCommit,diffBase}=resolveCommit({pr:t.pr,branch:t.branch});
+  // checker que solo ejecuta pytest (archivos o carpeta tests/): lo hace el PC, sin modelo ni citas.
+  const deterministic=profile==='checker'&&!acceptance.length?detectDeterministic(t.files,criteria.concat(tests.map(p=>`pytest ${p}`))):null;
+  if(deterministic) return validateSpec({goal:t.goal,profile,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
   return validateSpec({goal:t.goal,profile,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
 }
 
@@ -61,7 +71,7 @@ const latestReport=(store,id)=>store.db.prepare('SELECT id FROM reports WHERE ta
 
 export function syncRemote(store,c,remote) {
   if(!remote||!fs.existsSync(path.join(remote,'.git'))) throw Error('Private remote checkout required');
-  git(remote,['pull','-q','--rebase','origin','main']);
+  pull(remote);
   c.repoName??=repoName(c.repo);
   const inbox=path.join(remote,'inbox'),receipts=path.join(remote,'receipts');
   fs.mkdirSync(inbox,{recursive:true});fs.mkdirSync(receipts,{recursive:true});
@@ -77,10 +87,10 @@ export function syncRemote(store,c,remote) {
       if(containsSecret(raw)) throw Error('Instruction contains a credential-like value; rejected without processing');
       const value=JSON.parse(raw);
       if(`${value.key}.json`!==name) throw Error('File name must be <key>.json');
-      const spec=parseInstruction(value,c,resolve);
+      const spec=parseInstruction(value,c,resolve,repo=>repo===c.repo?resolve:commitResolver(repo));
       const task=store.submitUnique(spec,`remote-${value.key}`);
       store.event(task.id,'remote_instruction',{file:name,key:value.key,origin:spec.origin,instruction:value});
-      receipt={key:value.key,status:'accepted',taskId:task.id,state:task.state,receivedAt,commit:spec.baseCommit,task:`tasks/${task.id}.json`};
+      receipt={key:value.key,status:'accepted',taskId:task.id,state:task.state,engine:spec.engine??'ollama',receivedAt,commit:spec.baseCommit,task:`tasks/${task.id}.json`};
     } catch(e) {
       store.event(null,'remote_rejected',{file:name,error:String(e.message).slice(0,300)});
       receipt={key:name.replace(/\.json$/,''),status:'rejected',reason:String(e.message).slice(0,300),receivedAt};
@@ -94,7 +104,7 @@ export function syncRemote(store,c,remote) {
     const row=store.get(receipt.taskId); if(!row) continue;
     const report=latestReport(store,row.id);
     writeChanged(path.join(receipts,name),safeJson({...receipt,state:row.state,steps:row.steps,updatedAt:new Date(row.updated).toISOString(),
-      verdict:row.result?.review?.verdict,reason:row.result?.error,report:report&&['completed','blocked','failed','cancelled'].includes(row.state)?`reports/${report}.md`:undefined}));
+      verdict:row.result?.review?.verdict,reason:row.result?.error,branch:row.result?.branch&&row.spec.engine?row.result.branch:undefined,pr:row.result?.pr,report:report&&['completed','blocked','failed','cancelled'].includes(row.state)?`reports/${report}.md`:undefined}));
   }
   const tasks=store.list();
   const campaignFile=path.join(c.vault,'campaign.json');
@@ -102,17 +112,17 @@ export function syncRemote(store,c,remote) {
   const flat=e=>safeJson({at:new Date(e.created).toISOString(),kind:e.kind,...JSON.parse(e.body)}).trim().replace(/\n\s*/g,'');
   const campaignEvents=store.db.prepare('SELECT kind,body,created FROM events WHERE task IS NULL ORDER BY created,id').all();
   writeChanged(path.join(remote,'campaign-events.jsonl'),campaignEvents.map(flat).join('\n')+'\n');
-  writeChanged(path.join(remote,'status.json'),safeJson({updatedAt:new Date().toISOString(),worker:'local-ollama',model:c.model,
-    tasks:tasks.map(t=>{const row=store.get(t.id);return {id:t.id,key:row.key,state:t.state,profile:row.spec.profile,steps:t.steps,attempts:t.attempts,updated:new Date(t.updated).toISOString(),verdict:row.result?.review?.verdict,reason:row.result?.error?.slice(0,200)};})}));
+  writeChanged(path.join(remote,'status.json'),safeJson({updatedAt:new Date().toISOString(),worker:'local-ollama+orq',model:c.model,
+    tasks:tasks.map(t=>{const row=store.get(t.id);return {id:t.id,key:row.key,state:t.state,profile:row.spec.profile,engine:row.spec.engine??'ollama',steps:t.steps,attempts:t.attempts,updated:new Date(t.updated).toISOString(),verdict:row.result?.review?.verdict,reason:row.result?.error?.slice(0,200)};})}));
   for(const t of tasks) {
     const row=store.get(t.id), r=row.result;
-    writeChanged(path.join(remote,'tasks',`${t.id}.json`),safeJson({id:t.id,key:row.key,state:row.state,goal:row.spec.goal,profile:row.spec.profile,files:row.spec.files,tests:row.spec.tests,criteria:row.spec.criteria,
+    writeChanged(path.join(remote,'tasks',`${t.id}.json`),safeJson({id:t.id,key:row.key,state:row.state,goal:row.spec.goal,profile:row.spec.profile,engine:row.spec.engine??'ollama',repo:row.spec.repo,files:row.spec.files,tests:row.spec.tests,criteria:row.spec.criteria,
       baseCommit:row.spec.baseCommit,diffBase:row.spec.diffBase,origin:row.spec.origin,steps:row.steps,attempts:row.attempts,
-      result:r&&{summary:r.summary,summary_source:r.summary_source,error:r.error,reason:r.reason,review:r.review,tests:r.tests,coverage:r.coverage,acceptance:r.acceptance,assertions:r.assertions,checks:r.checks,branch:r.branch},
+      result:r&&{headline:r.headline,summary:r.summary,summary_source:r.summary_source,error:r.error,reason:r.reason,review:r.review,tests:r.tests,coverage:r.coverage,acceptance:r.acceptance,assertions:r.assertions,checks:r.checks,branch:r.branch,commit:r.commit,pr:r.pr,changed:r.changed,warnings:r.warnings,attempts:r.attempts},
       report:latestReport(store,t.id)&&`reports/${latestReport(store,t.id)}.md`}));
     const events=store.db.prepare('SELECT kind,body,created FROM events WHERE task=? ORDER BY created,id').all(t.id);
     writeChanged(path.join(remote,'events',`${t.id}.jsonl`),events.map(flat).join('\n')+'\n');
-    const metrics=store.metrics(t.id).map(m=>({at:m.at,model:m.model,input_tokens:m.input_tokens,output_tokens:m.output_tokens,duration_ms:m.duration_ms,cloud:m.cloud,error:m.error}));
+    const metrics=store.metrics(t.id).map(m=>({at:m.at,model:m.model,input_tokens:m.input_tokens,output_tokens:m.output_tokens,duration_ms:m.duration_ms,cloud:m.cloud,cost_usd:m.cost_usd,error:m.error}));
     writeChanged(path.join(remote,'metrics',`${t.id}.json`),safeJson(metrics));
     for(const report of store.db.prepare('SELECT id,file FROM reports WHERE task=? ORDER BY created').all(t.id)) if(fs.existsSync(report.file)) writeChanged(path.join(remote,'reports',`${report.id}.md`),scrub(fs.readFileSync(report.file,'utf8')));
   }
@@ -125,6 +135,6 @@ export function syncRemote(store,c,remote) {
     git(remote,['reset','-q']);throw Error('Refusing to sync: staged mirror contains a forbidden file or credential-like value');
   }
   git(remote,['-c','user.name=Gatetes Local','-c','user.email=gatetes-local@users.noreply.github.com','commit','-q','-m','Sync local agent activity']);
-  try { push(remote); } catch { git(remote,['pull','-q','--rebase','origin','main']); push(remote); }
+  try { push(remote); } catch { pull(remote); push(remote); }
   return {tasks:tasks.length,pushed:true};
 }
