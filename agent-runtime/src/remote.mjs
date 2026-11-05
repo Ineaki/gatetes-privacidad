@@ -20,9 +20,9 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   if(!value||value.kind!=='task'||typeof value.key!=='string'||!keyPattern.test(value.key)) throw Error('Expected {"kind":"task","key":"<3-80 chars a-z0-9._->"}');
   const t=value.task;
   if(!t||typeof t!=='object') throw Error('Missing task object');
-  if(t.engine!==undefined&&!['ollama','claude','codex'].includes(t.engine)) throw Error(`engine "${t.engine}" not accepted; use "claude", "codex" or "ollama"`);
+  if(t.engine!==undefined&&!['ollama','llamacpp','claude','codex'].includes(t.engine)) throw Error(`engine "${t.engine}" not accepted; use "claude", "codex", "ollama" or "llamacpp"`);
   const route=routeEngine(t.profile,t.engine);
-  if(route!=='ollama') return parseOrqInstruction(value,c,route,resolveFor);
+  if(route!=='ollama'&&route!=='llamacpp') return parseOrqInstruction(value,c,route,resolveFor);
   const profile={reviewer:'reviewer',checker:'checker'}[t.profile];
   if(!profile) throw Error(`profile "${t.profile}" not accepted; use "reviewer" or "checker"`);
   if(typeof t.goal!=='string'||t.goal.trim().length<20||t.goal.length>1000) throw Error('goal must be 20-1000 characters');
@@ -41,8 +41,9 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   const {baseCommit,diffBase}=resolveCommit({pr:t.pr,branch:t.branch});
   // checker que solo ejecuta pytest (archivos o carpeta tests/): lo hace el PC, sin modelo ni citas.
   const deterministic=profile==='checker'&&!acceptance.length?detectDeterministic(t.files,criteria.concat(tests.map(p=>`pytest ${p}`))):null;
-  if(deterministic) return validateSpec({goal:t.goal,profile,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
-  return validateSpec({goal:t.goal,profile,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
+  const localEngine=route==='llamacpp'?'llamacpp':undefined;
+  if(deterministic) return validateSpec({goal:t.goal,profile,engine:localEngine,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
+  return validateSpec({goal:t.goal,profile,engine:localEngine,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
 }
 
 // Instructions name a PR or branch; work is always pinned to the exact fetched commit.

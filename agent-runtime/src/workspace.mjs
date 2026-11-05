@@ -30,6 +30,7 @@ export function validateSpec(input) {
   const criteria=input.criteria??[];
   if(!Array.isArray(criteria)||criteria.length>6||criteria.some(x=>typeof x!=='string'||!x.trim()||x.length>300)) throw Error('Invalid criteria (max 6, 300 characters each)');
   const spec={ goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), baseCommit, origin:String(input.origin??'local').slice(0,80) };
+  if(input.engine) spec.engine=input.engine;
   // Optional review fields are only stored when used, so older task specs keep their idempotency keys.
   if(diffBase) spec.diffBase=diffBase;
   if(tests.length) spec.tests=[...new Set(tests)];

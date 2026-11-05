@@ -12,6 +12,7 @@ const git = (repo, args, timeout = 60000) => execFileSync('git', ['-C', repo, ..
 
 // Decide quién ejecuta un encargo remoto. Devuelve 'ollama', 'claude' o 'codex', o lanza el motivo de rechazo.
 export function routeEngine(profile, engine) {
+  if (engine === 'llamacpp') return 'llamacpp';
   if (profile === 'checker' || engine === 'ollama') return 'ollama';
   if (engine === undefined || engine === null) {
     if (profile === 'reviewer') return 'ollama';

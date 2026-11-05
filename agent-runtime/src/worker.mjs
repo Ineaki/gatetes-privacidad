@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildContext } from './context.mjs';
-import { modelFor } from './config.mjs';
+import { providerModelFor } from './config.mjs';
+import { llamaCppChat } from './providers.mjs';
 import { taskWorkspace, reconcile, readFile, writeFile, checkSyntax, verify, fileHash, safeFile } from './workspace.mjs';
 import { simulatedToolCall, machineLock, sha } from './guard.mjs';
 import { runOrqTask, orqSettings, ORQ_ENGINES } from './orq.mjs';
@@ -37,7 +38,9 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   if(!task) { unlock(); return null; }
   const controller=new AbortController(), combined=AbortSignal.any([signal,controller.signal]);
   const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null, reprompted=task.checkpoint.reprompted??false;
-  const model=modelFor(c,task.spec.profile);
+  const engine=task.spec.engine ?? 'ollama';
+  if (engine === 'llamacpp' && chat === ollamaChat) chat = llamaCppChat;
+  const model=providerModelFor(c,task.spec.profile,engine);
   const isOrq=ORQ_ENGINES.includes(task.spec.engine), maxSeconds=isOrq?orqSettings(c).maxSeconds:c.maxSeconds;
   const elapsed=()=>task.elapsed+Date.now()-started;
   const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=maxSeconds*1000) throw Error('Task time limit'); };
@@ -76,7 +79,10 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     while(steps<c.maxSteps) {
       guard(); task.checkpoint=store.get(task.id).checkpoint;
       const context=buildContext(c,task,tools,memory,history);
-      const response=await callModel({model:model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
+      const body={model,messages:context.messages,tools,stream:false,temperature:0};
+      if(engine==='ollama') Object.assign(body,{think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,...(c.cpuOnly?{num_gpu:0}:{})}});
+      else Object.assign(body,{max_tokens:c.output});
+      const response=await callModel(body);
       const msg=response.message;
       if(!msg||typeof msg!=='object') throw Error('Invalid model message');
       // Hidden reasoning is never persisted or returned to another model.
