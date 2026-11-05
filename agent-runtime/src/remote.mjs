@@ -83,7 +83,7 @@ export function syncRemote(store,c,remote) {
     try {
       if(!/^[a-zA-Z0-9._-]{1,84}\.json$/.test(name)||!fs.statSync(file).isFile()) throw Error('Invalid inbox file name');
       if(fs.statSync(file).size>8000) throw Error('Instruction too large (max 8 KB)');
-      const raw=fs.readFileSync(file,'utf8');
+      const raw=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''); // PowerShell 5 guarda UTF-8 con BOM
       if(containsSecret(raw)) throw Error('Instruction contains a credential-like value; rejected without processing');
       const value=JSON.parse(raw);
       if(`${value.key}.json`!==name) throw Error('File name must be <key>.json');

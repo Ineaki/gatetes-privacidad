@@ -138,6 +138,10 @@ test('remote inbox round trip: receipt, local execution, report and private push
   fs.writeFileSync(path.join(mirror,'inbox/nube-001.json'),JSON.stringify({...instruction,key:'nube-001',task:{...instruction.task,engine:'gpt'}}));
   syncRemote(s,c,mirror);
   assert.match(JSON.parse(fs.readFileSync(path.join(mirror,'receipts/nube-001.json'),'utf8')).reason,/not accepted/);
+  // PowerShell 5 (Set-Content/Out-File -Encoding UTF8) escribe un BOM: el encargo debe aceptarse igual.
+  fs.writeFileSync(path.join(mirror,'inbox/bom-001.json'),'﻿'+JSON.stringify({...instruction,key:'bom-001',task:{...instruction.task,goal:'Review the fall threshold logic for DPI problems (BOM)'}}));
+  syncRemote(s,c,mirror);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(mirror,'receipts/bom-001.json'),'utf8')).status,'accepted');
 });
 test('grounding ignores line breaks and corrects a miscounted line, but rejects invented quotes',async t=>{
   const {s,c}=fixture(t);s.submit(reviewSpec());
