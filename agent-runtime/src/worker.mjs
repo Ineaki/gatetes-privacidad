@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildContext } from './context.mjs';
+import { modelFor } from './config.mjs';
 import { taskWorkspace, reconcile, readFile, writeFile, checkSyntax, verify, fileHash, safeFile } from './workspace.mjs';
 import { simulatedToolCall, machineLock, sha } from './guard.mjs';
 import { runOrqTask, orqSettings, ORQ_ENGINES } from './orq.mjs';
@@ -36,6 +37,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
   if(!task) { unlock(); return null; }
   const controller=new AbortController(), combined=AbortSignal.any([signal,controller.signal]);
   const started=Date.now(); let steps=task.steps, root, history=[], last=task.checkpoint.last??null, reprompted=task.checkpoint.reprompted??false;
+  const model=modelFor(c,task.spec.profile);
   const isOrq=ORQ_ENGINES.includes(task.spec.engine), maxSeconds=isOrq?orqSettings(c).maxSeconds:c.maxSeconds;
   const elapsed=()=>task.elapsed+Date.now()-started;
   const guard=()=>{ if(combined.aborted) throw Error('Worker stopped'); store.assert(task); if(elapsed()>=maxSeconds*1000) throw Error('Task time limit'); };
@@ -49,14 +51,14 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     guard(); const requestStart=Date.now(); steps++; checkpoint(); // Failed/aborted requests still consume a step.
     let response;
     try { response=await chat(c,body,combined); }
-    catch(e){store.metric(task.id,{run_id:owner,model:c.model,input_tokens:null,output_tokens:null,duration_ms:Date.now()-requestStart,error:String(e.message).slice(0,300),cloud:false});store.event(task.id,'model_error',{step:steps,error:String(e.message).slice(0,300)});throw e;}
+    catch(e){store.metric(task.id,{run_id:owner,model:model,input_tokens:null,output_tokens:null,duration_ms:Date.now()-requestStart,error:String(e.message).slice(0,300),cloud:false});store.event(task.id,'model_error',{step:steps,error:String(e.message).slice(0,300)});throw e;}
     guard();
     const content=String(response.message?.content??'');
     const dir=path.join(c.vault,'evidence',task.id); fs.mkdirSync(dir,{recursive:true});
     const file=path.join(dir,`call-${String(steps).padStart(2,'0')}.json`);
     fs.writeFileSync(file,JSON.stringify({at:new Date().toISOString(),request:body,response:{content,tool_calls:response.message?.tool_calls??null,done_reason:response.done_reason??null}},null,2),{mode:0o600});
-    store.metric(task.id,{run_id:owner,model:c.model,input_tokens:response.prompt_eval_count??null,output_tokens:response.eval_count??null,duration_ms:Date.now()-requestStart,cloud:false});
-    store.event(task.id,'model_call',{step:steps,model:c.model,prompt_sha:sha(JSON.stringify(body.messages)),response_sha:sha(content),tool_calls:response.message?.tool_calls?.length??0,excerpt:content.slice(0,400),evidence:path.basename(file)});
+    store.metric(task.id,{run_id:owner,model:model,input_tokens:response.prompt_eval_count??null,output_tokens:response.eval_count??null,duration_ms:Date.now()-requestStart,cloud:false});
+    store.event(task.id,'model_call',{step:steps,model:model,prompt_sha:sha(JSON.stringify(body.messages)),response_sha:sha(content),tool_calls:response.message?.tool_calls?.length??0,excerpt:content.slice(0,400),evidence:path.basename(file)});
     return response;
   };
   try {
@@ -74,7 +76,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     while(steps<c.maxSteps) {
       guard(); task.checkpoint=store.get(task.id).checkpoint;
       const context=buildContext(c,task,tools,memory,history);
-      const response=await callModel({model:c.model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
+      const response=await callModel({model:model,messages:context.messages,tools,stream:false,think:false,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
       const msg=response.message;
       if(!msg||typeof msg!=='object') throw Error('Invalid model message');
       // Hidden reasoning is never persisted or returned to another model.
@@ -101,7 +103,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
         }
         checkpoint();
         const passed=assertions.every(a=>a.passed)&&checks.every(a=>a.passed);
-        const result={summary:clean.content,summary_source:'unverified_model_statement',assertions,checks,acceptance:assertions.length?'assertions_only':'human_review_required',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:c.model,metrics:store.metrics(task.id)};
+        const result={summary:clean.content,summary_source:'unverified_model_statement',assertions,checks,acceptance:assertions.length?'assertions_only':'human_review_required',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:model,metrics:store.metrics(task.id)};
         store.finish(task,passed?'completed':'blocked',result);
         return store.get(task.id);
       }
@@ -163,7 +165,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
     const messages=reviewMessages(spec,evidence);
     for(let attempt=0;;attempt++) {
       if(steps>=c.maxSteps) throw Error('Task step limit');
-      const response=await callModel({model:c.model,messages,stream:false,think:false,format:schema,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
+      const response=await callModel({model:model,messages,stream:false,think:false,format:schema,keep_alive:'5m',options:{num_ctx:c.context,num_predict:c.output,temperature:0,...(c.cpuOnly?{num_gpu:0}:{})}});
       if(response.done_reason==='length') throw new Unusable('Output limit reached before the review JSON was complete');
       const content=String(response.message?.content??'');
       const verdict=response.message?.tool_calls?.length?{ok:false,retryable:true,reasons:['reply requested tools, which this profile does not have']}:assessReview(root,spec,content);
@@ -172,7 +174,7 @@ export async function runOne(store,c,{chat=ollamaChat,signal=new AbortController
         const tests=spec.testResults, failed=tests.filter(t=>t.exit!==0);
         const report=reviewMarkdown(spec,verdict.review,tests,evidence.coverage);
         const result={summary:verdict.review.summary,summary_source:'model_review_grounded_in_files',review:verdict.review,report_md:report,tests,coverage:evidence.coverage,
-          acceptance:failed.length?'tests_failed':'grounded_review',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:c.model,metrics:store.metrics(task.id)};
+          acceptance:failed.length?'tests_failed':'grounded_review',workspace:root,branch:`agent/task-${task.id}`,steps,elapsed_ms:elapsed(),model:model,metrics:store.metrics(task.id)};
         checkpoint(); store.finish(task,failed.length?'blocked':'completed',result);
         return store.get(task.id);
       }
