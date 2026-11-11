@@ -280,3 +280,11 @@ test('checker that only runs pytest is deterministic: no model call, real output
   else assert.equal(done.state,'blocked');
   assert.equal(s.metrics(done.id)[0].model,'ninguno (pytest en el PC)');
 });
+test('grounding keeps an exact cited line when the same snippet appears twice',async t=>{
+  const {s,c,repo,g}=fixture(t);
+  fs.writeFileSync(path.join(repo,'app/caida.py'),code+'def otro():\n    return caer(99)\n\ndef soltar():\n    return caer(99)\n');g('commit','-qam','dup');
+  s.submit(reviewSpec());
+  const r=JSON.parse(goodReview);r.checked[0]={file:'app/caida.py',line:9,quote:'return caer(99)',observation:'Second occurrence, cited at its exact line.'};
+  const result=await runOne(s,c,{chat:async()=>({message:{content:JSON.stringify(r)}})});
+  assert.equal(result.state,'completed',JSON.stringify(result.result).slice(0,300));assert.equal(result.result.review.checked[0].line,9);
+});
