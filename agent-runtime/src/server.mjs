@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { validateSpec } from './workspace.mjs';
 import { runOne } from './worker.mjs';
+import { parseJsonText } from './json.mjs';
 
 export function credentials(c) {
   const file=path.join(c.vault,'credentials.json');
   if(!fs.existsSync(file)) fs.writeFileSync(file,JSON.stringify({admin:randomBytes(32).toString('hex'),delegate:randomBytes(32).toString('hex')},null,2),{flag:'wx',mode:0o600});
-  return JSON.parse(fs.readFileSync(file,'utf8'));
+  return parseJsonText(fs.readFileSync(file,'utf8'),'credentials');
 }
 function equal(a,b) { const x=Buffer.from(a),y=Buffer.from(b); return x.length===y.length&&timingSafeEqual(x,y); }
 export function dispatch(store,action,args={},role='delegate') {
@@ -46,7 +47,7 @@ export function makeServer(store,c) {
     try {
       let bytes=0; const chunks=[];
       for await(const chunk of req) {bytes+=chunk.length;if(bytes>24000) throw Error('Request too large'); chunks.push(chunk);}
-      const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const body=parseJsonText(Buffer.concat(chunks).toString('utf8'),'RPC request');
       if(body.action==='shutdown') {
         if(role!=='admin') throw Error('Action forbidden');
         send(200,{result:'Stopping after checkpoint'});setImmediate(()=>server.emit('shutdown'));return;

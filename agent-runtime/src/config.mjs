@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { parseJsonText } from './json.mjs';
 
 export const repoDefault = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export function config(overrides = {}) {
@@ -9,7 +10,7 @@ export function config(overrides = {}) {
   const vault = path.resolve(overrides.vault ?? process.env.AGENT_VAULT ?? path.join(os.homedir(), 'Documents/Codex/agent-private/gatetes'));
   if (vault === repo || vault.startsWith(repo + path.sep)) throw Error('Vault must be outside repository');
   const settingsFile=path.join(vault,'settings.json');
-  const saved=fs.existsSync(settingsFile)?JSON.parse(fs.readFileSync(settingsFile,'utf8')):{};
+  const saved=fs.existsSync(settingsFile)?parseJsonText(fs.readFileSync(settingsFile,'utf8'),'settings'):{};
   const supported=['model','models','context','output','margin','maxSteps','maxSeconds','requestMs','leaseMs','maxAttempts','cpuOnly','port','llamacpp','llamacppModel','llamacppModels'];
   for(const key of Object.keys(saved)) if(!supported.includes(key)) throw Error(`Unknown setting ${key}`);
   const c = { repo, vault, model: 'qwen2.5:3b', ollama: 'http://127.0.0.1:11434', llamacpp: 'http://127.0.0.1:8080', llamacppModel: 'local-model', llamacppModels: {}, port: 4317, cpuOnly:false,

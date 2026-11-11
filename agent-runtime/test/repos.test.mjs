@@ -38,7 +38,8 @@ const pinned=head=>()=>({baseCommit:head});
 test('panel checker on Ineaki/gatetes-agent-vault is accepted (was «repo must be Ineaki/gatetes») and runs in that clone',t=>{
   const {c,vault}=fixture(t);
   const spec=parseInstruction(panel('Ineaki/gatetes-agent-vault'),c,pinned('a'.repeat(40)),clone=>{assert.equal(clone,vault.repo);return pinned(vault.head);});
-  assert.equal(spec.repo,'Ineaki/gatetes-agent-vault');assert.equal(spec.baseCommit,vault.head);assert.equal(spec.profile,'checker');
+  assert.equal(spec.repo,'Ineaki/gatetes-agent-vault');
+  assert.equal(parseInstruction(panel('ineaki/GATETES-agent-vault'),c,pinned('a'.repeat(40)),()=>pinned(vault.head)).repo,'Ineaki/gatetes-agent-vault','case-insensitive, canonical name');assert.equal(spec.baseCommit,vault.head);assert.equal(spec.profile,'checker');
   const s=new Store(c);
   const task=s.submitUnique(spec,'remote-panel-20261105-221514');
   const root=taskWorkspace(c,task);
@@ -59,7 +60,7 @@ test('Ineaki/generacion-de-demanda and Ineaki/gatetes are accepted; home repo ke
 test('repos outside the allowlist or outside owner Ineaki are still rejected, even with a local clone',t=>{
   const {c,dir}=fixture(t,{AGENT_ORQ_REPOS:JSON.stringify({'otro/gatetes':'x','Ineaki/otro':'y'})});
   const resolve=pinned('a'.repeat(40));
-  for(const repo of ['otro/gatetes','Ineaki/otro','ineaki/gatetes-agent-vault','Ineaki/gatetes/../x','Ineaki-fake/gatetes',42]) {
+  for(const repo of ['otro/gatetes','Ineaki/otro','inaki/gatetes-agent-vault','Ineaki/gatetes/../x','Ineaki-fake/gatetes',42]) {
     assert.throws(()=>parseInstruction(panel(repo),c,resolve,()=>resolve),/not allowed|repo is required/,`local route rejects ${repo}`);
     assert.throws(()=>parseInstruction(panel(repo,{profile:'reviewer',engine:'codex'}),c,resolve,()=>resolve),/not allowed|repo is required/,`orq route rejects ${repo}`);
   }

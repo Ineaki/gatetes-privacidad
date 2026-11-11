@@ -3,9 +3,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { validateSpec } from './workspace.mjs';
 import { scrub, containsSecret } from './guard.mjs';
-import { routeEngine, parseOrqInstruction } from './orq.mjs';
+import { routeEngine, parseOrqInstruction, canonicalRepo, blankRepo } from './orq.mjs';
 import { detectDeterministic } from './deterministic.mjs';
-import { checkRepo, repoPath } from './repos.mjs';
+import { checkRepo, repoPath, allowedRepos } from './repos.mjs';
 
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
 const git = (repo,args) => execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:1_000_000,stdio:['ignore','pipe','pipe']}).trim();
@@ -30,7 +30,9 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   if(!Array.isArray(t.files)||t.files.length<1||t.files.length>4) throw Error('files must list 1-4 explicit paths');
   if(!Array.isArray(t.acceptance)||t.acceptance.length<1||t.acceptance.length>5) throw Error('acceptance must list 1-5 criteria');
   // CEO-029: antes solo valía el repo del PC («repo must be Ineaki/gatetes»); ahora, la lista de permitidos de Ineaki.
-  const other=t.repo!==undefined&&t.repo!==null&&t.repo!==''&&t.repo!==c.repoName?checkRepo(c,t.repo):null;
+  // El nombre se normaliza al canónico sin distinguir mayúsculas; vacío o ausente = repo del PC.
+  const named=blankRepo(t.repo)?null:(canonicalRepo(t.repo,c.repoName,[c.repoName,...allowedRepos()])??t.repo);
+  const other=named&&named!==c.repoName?checkRepo(c,named):null;
   if(other) resolveCommit=resolveFor(repoPath(c,other));
   const tests=[],criteria=[],acceptance=[];
   for(const a of t.acceptance) {

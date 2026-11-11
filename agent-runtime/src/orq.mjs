@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { runTests } from './review.mjs';
 import { scrub, containsSecret } from './guard.mjs';
-import { checkRepo, repoClones } from './repos.mjs';
+import { checkRepo, repoClones, allowedRepos } from './repos.mjs';
 
 export const ORQ_ENGINES = ['claude', 'codex'];
 const PROTECTED = new Set(['main', 'master']);
@@ -24,6 +24,17 @@ export function routeEngine(profile, engine) {
   if (profile === 'implementer') throw Error(`profile "implementer" runs on engine "claude" (got "${engine}")`);
   if (profile === 'reviewer') throw Error(`profile "reviewer" runs on engine "codex" or "ollama" (got "${engine}")`);
   throw Error(`profile "${profile}" not accepted; use implementer, reviewer or checker`);
+}
+
+// Repo de un encargo remoto. Vacío o ausente = repo por defecto (`fallback`). GitHub no distingue mayúsculas en
+// propietario/repo, así que "ineaki/gatetes" se normaliza al nombre canónico ("Ineaki/gatetes"); un nombre
+// distinto ("inaki/gatetes", otro repo) devuelve null y el llamador lo rechaza. Nunca se acepta sin validar.
+export const blankRepo = v => v === undefined || v === null || (typeof v === 'string' && !v.trim());
+export function canonicalRepo(value, fallback, known = [fallback]) {
+  if (blankRepo(value)) return fallback ?? null;
+  if (typeof value !== 'string') throw Error('repo is required as a string "owner/name"');
+  const v = value.trim().toLowerCase();
+  return known.find(k => typeof k === 'string' && k.toLowerCase() === v) ?? null;
 }
 
 // Ajustes de orq. Rutas por variables de entorno para no tocar settings.json del vault.
@@ -72,7 +83,8 @@ const cleanFile = p => {
 // Valida un encargo de Fox para claude/codex y lo deja fijado al commit exacto de la rama o PR.
 export function parseOrqInstruction(value, c, engine, resolveFor) {
   const t = value.task, o = orqSettings(c);
-  const repo = checkRepo(c, t.repo === undefined || t.repo === null || t.repo === '' ? c.repoName : t.repo);
+  // Nombre canónico (GitHub no distingue mayúsculas) y luego la lista de permitidos de Ineaki (CEO-029).
+  const repo = checkRepo(c, canonicalRepo(t.repo, c.repoName, [...Object.keys(o.repos), ...allowedRepos()]) ?? t.repo);
   if (!o.repos[repo]) throw Error(`repo "${repo}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
   if (typeof t.goal !== 'string' || t.goal.trim().length < 20 || t.goal.length > 4000) throw Error('goal must be 20-4000 characters');
   if (!Array.isArray(t.files) || t.files.length < 1 || t.files.length > 10) throw Error('files must list 1-10 explicit paths');

@@ -106,6 +106,13 @@ function grounded(root, spec, item) {
   const span = Math.max(4, String(item.quote).split('\n').length + 1);
   const at = i => squash(lines.slice(i, i + span).join('')).includes(quote);
   const starts = lines.map((_, i) => i).filter(i => at(i) && !at(i + 1)).map(i => i + 1);
+  // If the model supplied an actual start line, prefer that occurrence even
+  // when the same snippet appears elsewhere in the file. Checking starts
+  // (rather than merely the surrounding window) preserves correction of a
+  // miscounted line for multi-line quotes.
+  const cited = Number(item.line);
+  const firstLine = squash(String(item.quote).split('\n')[0]);
+  if (Number.isInteger(cited) && starts.includes(cited) && squash(lines[cited - 1] ?? '').includes(firstLine)) return null;
   const near = starts.filter(s => Math.abs(s - item.line) <= 3);
   let pick = near.length === 1 ? near[0] : (!near.length && starts.length === 1 ? starts[0] : null);
   if (pick === null && starts.length > 1) {
