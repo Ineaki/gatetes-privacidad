@@ -135,6 +135,18 @@ It does not detect Grok Bot's billing state or change its internal model.
 Availability of local commands/MCP/private networking must be verified in the
 actual Grok Bot account. No live Grok Bot integration is claimed by unit tests.
 
+## Allowed repositories (CEO-029)
+
+Remote instructions may name `task.repo`. The PC's own clone (`AGENT_REPO`) is
+always accepted; any other repo must be on the allowlist and have a local clone.
+Default allowlist: `Ineaki/gatetes`, `Ineaki/gatetes-agent-vault`,
+`Ineaki/generacion-de-demanda`. Replace it with
+`AGENT_ALLOWED_REPOS="Ineaki/a,Ineaki/b"`; entries from another owner are a
+configuration error. Clones: `AGENT_REMOTE` (vault mirror) and
+`AGENT_ORQ_REPOS='{"Ineaki/generacion-de-demanda":"C:\\ruta"}'`. Before this,
+local checker/reviewer tasks on any repo but the PC's own were rejected with
+`repo must be Ineaki/gatetes` (the panel sends `Ineaki/gatetes-agent-vault`).
+
 ## Backup and restore
 
 Stop the daemon and all MCP/CLI sessions. Copy the entire private vault to a

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { hash } from './store.mjs';
 import { validDeterministic } from './deterministic.mjs';
+import { repoPath } from './repos.mjs';
 
 const forbidden = /(^|\/)(\.git|\.env[^/]*|node_modules|vault|logs|worktrees|credentials[^/]*|[^/]*\.(?:pem|key|token|sqlite[^/]*))($|\/)/i;
 export function validPath(p) {
@@ -30,6 +31,11 @@ export function validateSpec(input) {
   const criteria=input.criteria??[];
   if(!Array.isArray(criteria)||criteria.length>6||criteria.some(x=>typeof x!=='string'||!x.trim()||x.length>300)) throw Error('Invalid criteria (max 6, 300 characters each)');
   const spec={ goal:input.goal, profile, files, dependencies:[...new Set(dependencies)], acceptance:acceptance.map(a=>({path:a.path,contains:a.contains})), baseCommit, origin:String(input.origin??'local').slice(0,80) };
+  if(input.engine) spec.engine=input.engine;
+  if(input.repo!==undefined&&input.repo!==null) {
+    if(typeof input.repo!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.repo)||input.repo.includes('..')) throw Error('Invalid repo');
+    spec.repo=input.repo;
+  }
   // Optional review fields are only stored when used, so older task specs keep their idempotency keys.
   if(diffBase) spec.diffBase=diffBase;
   if(tests.length) spec.tests=[...new Set(tests)];
@@ -59,7 +65,7 @@ export function git(repo,args) { return execFileSync('git',['-C',repo,...args],{
 export function taskWorkspace(c,task) {
   const root=path.join(c.vault,'worktrees',task.id);
   if (!fs.existsSync(root)) {
-    git(c.repo,['worktree','add','-b',`agent/task-${task.id}`,root,task.spec.baseCommit??'HEAD']);
+    git(repoPath(c,task.spec.repo),['worktree','add','-b',`agent/task-${task.id}`,root,task.spec.baseCommit??'HEAD']);
   }
   if (git(root,['rev-parse','--show-toplevel']).replaceAll('\\','/').toLowerCase()!==root.replaceAll('\\','/').toLowerCase()) throw Error('Wrong worktree');
   return root;

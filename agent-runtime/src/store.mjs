@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ensureVault } from './config.mjs';
 import { fingerprint } from './guard.mjs';
+import { repoPath } from './repos.mjs';
 
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export class Store {
@@ -51,7 +52,7 @@ export class Store {
   // Campaign and remote work go through here: an identical microtask is never queued twice.
   submitUnique(spec, key) {
     if(this.db.prepare('SELECT 1 FROM tasks WHERE key=?').get(key)) return this.submit(spec,key);
-    const run=args=>execFileSync('git',['-C',this.c.repo,...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','ignore']}).trim();
+    const run=args=>execFileSync('git',['-C',repoPath(this.c,spec.repo),...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','ignore']}).trim();
     const commit=spec.baseCommit??run(['rev-parse','HEAD']);
     const blobs=spec.files.map(p=>{try{return run(['rev-parse',`${commit}:${p}`]);}catch{return null;}});
     const fp=fingerprint(spec,blobs);

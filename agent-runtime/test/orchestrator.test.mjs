@@ -95,12 +95,12 @@ test('remote contract routes engines: checker/ollama local, implementer+claude a
   assert.throws(bad({profile:'implementer',engine:'codex'}),/runs on engine "claude"/);
   assert.throws(bad({profile:'reviewer',engine:'claude'}),/"codex" or "ollama"/);
   assert.throws(bad({engine:'gpt'}),/not accepted/);
-  assert.throws(bad({profile:'implementer',engine:'claude',repo:'Ineaki/otro'}),/no local clone/);
+  assert.throws(bad({profile:'implementer',engine:'claude',repo:'Ineaki/otro'}),/not allowed/);
   assert.throws(bad({profile:'implementer',engine:'claude',files:['.env']}),/Forbidden/);
   assert.throws(bad({profile:'nadie'}),/not accepted/);
   assert.throws(bad({acceptance:[]}),/acceptance/);
   assert.throws(bad({files:['a','b','c','d','e']}),/1-4/);
-  assert.throws(bad({repo:'Ineaki/otro'}),/repo must be/);
+  assert.throws(bad({repo:'Ineaki/otro'}),/not allowed/);
   assert.throws(()=>parseInstruction({...base,key:'../x'},c,resolve),/key/);
 });
 
@@ -121,7 +121,7 @@ test('remote repo: Ineaki/gatetes canonical, case-insensitive, blank = default, 
     // vacío, espacios, null o ausente: repo por defecto
     for(const repo of ['','  ',null,undefined]) { const s=mk(engine,{repo})();if(orq) assert.equal(s.repo,'Ineaki/gatetes',`${engine} ${repo}`); }
     // otro propietario (falta la "e"), otro repo o el vault: rechazados
-    const why=orq?/no local clone/:/repo must be Ineaki\/gatetes \(got/;
+    const why=/not allowed|no local clone/; // CEO-029: lista de permitidos; el vault sin clon aquí
     for(const repo of ['inaki/gatetes','Ineaki/otro','Ineaki/gatetes-agent-vault','Ineaki/gatetes/x']) assert.throws(mk(engine,{repo}),why,`${engine} ${repo}`);
     assert.throws(mk(engine,{repo:42}),/string/,engine);
   }

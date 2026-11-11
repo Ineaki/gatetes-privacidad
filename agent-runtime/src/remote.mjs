@@ -5,6 +5,7 @@ import { validateSpec } from './workspace.mjs';
 import { scrub, containsSecret } from './guard.mjs';
 import { routeEngine, parseOrqInstruction, canonicalRepo, blankRepo } from './orq.mjs';
 import { detectDeterministic } from './deterministic.mjs';
+import { checkRepo, repoPath, allowedRepos } from './repos.mjs';
 
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
 const git = (repo,args) => execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:60000,windowsHide:true,maxBuffer:1_000_000,stdio:['ignore','pipe','pipe']}).trim();
@@ -20,16 +21,19 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   if(!value||value.kind!=='task'||typeof value.key!=='string'||!keyPattern.test(value.key)) throw Error('Expected {"kind":"task","key":"<3-80 chars a-z0-9._->"}');
   const t=value.task;
   if(!t||typeof t!=='object') throw Error('Missing task object');
-  if(t.engine!==undefined&&!['ollama','claude','codex'].includes(t.engine)) throw Error(`engine "${t.engine}" not accepted; use "claude", "codex" or "ollama"`);
+  if(t.engine!==undefined&&!['ollama','llamacpp','claude','codex'].includes(t.engine)) throw Error(`engine "${t.engine}" not accepted; use "claude", "codex", "ollama" or "llamacpp"`);
   const route=routeEngine(t.profile,t.engine);
-  if(route!=='ollama') return parseOrqInstruction(value,c,route,resolveFor);
+  if(route!=='ollama'&&route!=='llamacpp') return parseOrqInstruction(value,c,route,resolveFor);
   const profile={reviewer:'reviewer',checker:'checker'}[t.profile];
   if(!profile) throw Error(`profile "${t.profile}" not accepted; use "reviewer" or "checker"`);
   if(typeof t.goal!=='string'||t.goal.trim().length<20||t.goal.length>1000) throw Error('goal must be 20-1000 characters');
   if(!Array.isArray(t.files)||t.files.length<1||t.files.length>4) throw Error('files must list 1-4 explicit paths');
   if(!Array.isArray(t.acceptance)||t.acceptance.length<1||t.acceptance.length>5) throw Error('acceptance must list 1-5 criteria');
-  // Ollama trabaja solo sobre el clon local de c.repo: cualquier otro repo (p. ej. el vault) no tiene copia aquí.
-  if(!blankRepo(t.repo)&&canonicalRepo(t.repo,c.repoName)!==c.repoName) throw Error(`repo must be ${c.repoName} (got "${String(t.repo).slice(0,80)}"); Ollama only works on ${c.repoName}`);
+  // CEO-029: antes solo valía el repo del PC («repo must be Ineaki/gatetes»); ahora, la lista de permitidos de Ineaki.
+  // El nombre se normaliza al canónico sin distinguir mayúsculas; vacío o ausente = repo del PC.
+  const named=blankRepo(t.repo)?null:(canonicalRepo(t.repo,c.repoName,[c.repoName,...allowedRepos()])??t.repo);
+  const other=named&&named!==c.repoName?checkRepo(c,named):null;
+  if(other) resolveCommit=resolveFor(repoPath(c,other));
   const tests=[],criteria=[],acceptance=[];
   for(const a of t.acceptance) {
     if(a&&typeof a==='object'&&typeof a.path==='string') {acceptance.push({path:a.path,contains:a.contains});continue;}
@@ -42,8 +46,10 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   const {baseCommit,diffBase}=resolveCommit({pr:t.pr,branch:t.branch});
   // checker que solo ejecuta pytest (archivos o carpeta tests/): lo hace el PC, sin modelo ni citas.
   const deterministic=profile==='checker'&&!acceptance.length?detectDeterministic(t.files,criteria.concat(tests.map(p=>`pytest ${p}`))):null;
-  if(deterministic) return validateSpec({goal:t.goal,profile,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
-  return validateSpec({goal:t.goal,profile,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
+  const localEngine=route==='llamacpp'?'llamacpp':undefined;
+  const repo=other??undefined;
+  if(deterministic) return validateSpec({goal:t.goal,profile,engine:localEngine,repo,files:deterministic.targets,deterministic,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
+  return validateSpec({goal:t.goal,profile,engine:localEngine,repo,files:t.files,tests,criteria,acceptance,baseCommit,diffBase,origin:String(t.origin??'grokbot-remoto').slice(0,40)});
 }
 
 // Instructions name a PR or branch; work is always pinned to the exact fetched commit.

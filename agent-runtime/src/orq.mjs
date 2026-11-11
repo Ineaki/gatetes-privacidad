@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { runTests } from './review.mjs';
 import { scrub, containsSecret } from './guard.mjs';
+import { checkRepo, repoClones, allowedRepos } from './repos.mjs';
 
 export const ORQ_ENGINES = ['claude', 'codex'];
 const PROTECTED = new Set(['main', 'master']);
@@ -12,6 +13,7 @@ const git = (repo, args, timeout = 60000) => execFileSync('git', ['-C', repo, ..
 
 // Decide quién ejecuta un encargo remoto. Devuelve 'ollama', 'claude' o 'codex', o lanza el motivo de rechazo.
 export function routeEngine(profile, engine) {
+  if (engine === 'llamacpp') return 'llamacpp';
   if (profile === 'checker' || engine === 'ollama') return 'ollama';
   if (engine === undefined || engine === null) {
     if (profile === 'reviewer') return 'ollama';
@@ -30,17 +32,14 @@ export function routeEngine(profile, engine) {
 export const blankRepo = v => v === undefined || v === null || (typeof v === 'string' && !v.trim());
 export function canonicalRepo(value, fallback, known = [fallback]) {
   if (blankRepo(value)) return fallback ?? null;
-  if (typeof value !== 'string') throw Error('repo must be a string "owner/name"');
+  if (typeof value !== 'string') throw Error('repo is required as a string "owner/name"');
   const v = value.trim().toLowerCase();
   return known.find(k => typeof k === 'string' && k.toLowerCase() === v) ?? null;
 }
 
 // Ajustes de orq. Rutas por variables de entorno para no tocar settings.json del vault.
 export function orqSettings(c) {
-  const repos = {};
-  if (c.repoName) repos[c.repoName] = c.repo;
-  if (process.env.AGENT_REMOTE) repos['Ineaki/gatetes-agent-vault'] = process.env.AGENT_REMOTE;
-  if (process.env.AGENT_ORQ_REPOS) Object.assign(repos, JSON.parse(process.env.AGENT_ORQ_REPOS));
+  const repos = repoClones(c);
   return {
     script: process.env.AGENT_ORQ_SCRIPT ?? path.join(process.env.USERPROFILE ?? '', 'orquestacion-ia', 'scripts', 'orq.ps1'),
     pwsh: process.env.AGENT_PWSH ?? 'pwsh',
@@ -84,8 +83,9 @@ const cleanFile = p => {
 // Valida un encargo de Fox para claude/codex y lo deja fijado al commit exacto de la rama o PR.
 export function parseOrqInstruction(value, c, engine, resolveFor) {
   const t = value.task, o = orqSettings(c);
-  const repo = canonicalRepo(t.repo, c.repoName, Object.keys(o.repos));
-  if (!repo || !o.repos[repo]) throw Error(`repo "${blankRepo(t.repo) ? c.repoName : String(t.repo).slice(0, 80)}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
+  // Nombre canónico (GitHub no distingue mayúsculas) y luego la lista de permitidos de Ineaki (CEO-029).
+  const repo = checkRepo(c, canonicalRepo(t.repo, c.repoName, [...Object.keys(o.repos), ...allowedRepos()]) ?? t.repo);
+  if (!o.repos[repo]) throw Error(`repo "${repo}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
   if (typeof t.goal !== 'string' || t.goal.trim().length < 20 || t.goal.length > 4000) throw Error('goal must be 20-4000 characters');
   if (!Array.isArray(t.files) || t.files.length < 1 || t.files.length > 10) throw Error('files must list 1-10 explicit paths');
   if (!Array.isArray(t.acceptance) || t.acceptance.length < 1 || t.acceptance.length > 8) throw Error('acceptance must list 1-8 criteria');
