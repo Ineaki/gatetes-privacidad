@@ -7,6 +7,7 @@ import { validateSpec,git } from './workspace.mjs';
 import { credentials,dispatch,serve } from './server.mjs';
 import { runOne } from './worker.mjs';
 import { mcp } from './mcp.mjs';
+import { parseJsonText } from './json.mjs';
 
 const [command='help',...args]=process.argv.slice(2);
 try {
@@ -30,7 +31,7 @@ try {
     else {
       let value;
       if(command==='init') {ensureVault(c);credentials(c);value={vault:c.vault,model:c.model,credentials:'Created privately; never printed'};}
-      else if(command==='submit') value=store.submit(validateSpec(JSON.parse(fs.readFileSync(args[0],'utf8'))),args[1]);
+      else if(command==='submit') value=store.submit(validateSpec(parseJsonText(fs.readFileSync(args[0],'utf8'),'task')),args[1]);
       else if(command==='run-once') value=await runOne(store,c);
       else if(command==='metrics') value=store.metrics(args[0]);
       else if(command==='search') value=store.search(args.join(' '));

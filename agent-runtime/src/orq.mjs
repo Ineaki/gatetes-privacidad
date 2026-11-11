@@ -24,6 +24,17 @@ export function routeEngine(profile, engine) {
   throw Error(`profile "${profile}" not accepted; use implementer, reviewer or checker`);
 }
 
+// Repo de un encargo remoto. Vacío o ausente = repo por defecto (`fallback`). GitHub no distingue mayúsculas en
+// propietario/repo, así que "ineaki/gatetes" se normaliza al nombre canónico ("Ineaki/gatetes"); un nombre
+// distinto ("inaki/gatetes", otro repo) devuelve null y el llamador lo rechaza. Nunca se acepta sin validar.
+export const blankRepo = v => v === undefined || v === null || (typeof v === 'string' && !v.trim());
+export function canonicalRepo(value, fallback, known = [fallback]) {
+  if (blankRepo(value)) return fallback ?? null;
+  if (typeof value !== 'string') throw Error('repo must be a string "owner/name"');
+  const v = value.trim().toLowerCase();
+  return known.find(k => typeof k === 'string' && k.toLowerCase() === v) ?? null;
+}
+
 // Ajustes de orq. Rutas por variables de entorno para no tocar settings.json del vault.
 export function orqSettings(c) {
   const repos = {};
@@ -73,8 +84,8 @@ const cleanFile = p => {
 // Valida un encargo de Fox para claude/codex y lo deja fijado al commit exacto de la rama o PR.
 export function parseOrqInstruction(value, c, engine, resolveFor) {
   const t = value.task, o = orqSettings(c);
-  const repo = t.repo ?? c.repoName;
-  if (!o.repos[repo]) throw Error(`repo "${repo}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
+  const repo = canonicalRepo(t.repo, c.repoName, Object.keys(o.repos));
+  if (!repo || !o.repos[repo]) throw Error(`repo "${blankRepo(t.repo) ? c.repoName : String(t.repo).slice(0, 80)}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
   if (typeof t.goal !== 'string' || t.goal.trim().length < 20 || t.goal.length > 4000) throw Error('goal must be 20-4000 characters');
   if (!Array.isArray(t.files) || t.files.length < 1 || t.files.length > 10) throw Error('files must list 1-10 explicit paths');
   if (!Array.isArray(t.acceptance) || t.acceptance.length < 1 || t.acceptance.length > 8) throw Error('acceptance must list 1-8 criteria');

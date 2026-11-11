@@ -103,6 +103,29 @@ test('remote contract routes engines: checker/ollama local, implementer+claude a
   assert.throws(bad({repo:'Ineaki/otro'}),/repo must be/);
   assert.throws(()=>parseInstruction({...base,key:'../x'},c,resolve),/key/);
 });
+
+test('remote repo: Ineaki/gatetes canonical, case-insensitive, blank = default, others rejected (ollama, claude, codex)',t=>{
+  const {c}=fixture(t);c.repoName='Ineaki/gatetes';
+  const saved=process.env.AGENT_REMOTE;delete process.env.AGENT_REMOTE;t.after(()=>{if(saved!==undefined) process.env.AGENT_REMOTE=saved;});
+  const resolve=()=>({baseCommit:'a'.repeat(40)});
+  const engines={ollama:{profile:'checker',engine:'ollama'},claude:{profile:'implementer',engine:'claude'},codex:{profile:'reviewer',engine:'codex'}};
+  const mk=(engine,patch)=>()=>parseInstruction({kind:'task',key:'repo-check-001',task:{goal:'Revisa el umbral de la caida y cita archivo:linea',
+    files:['app/caida.py'],acceptance:['Indica si depende del DPI'],...engines[engine],...patch}},c,resolve,()=>resolve);
+  for(const engine of Object.keys(engines)) {
+    const orq=engine!=='ollama';
+    // válido exacto
+    const ok=mk(engine,{repo:'Ineaki/gatetes'})();assert.equal(ok.engine,orq?engine:undefined,engine);
+    if(orq) assert.equal(ok.repo,'Ineaki/gatetes');
+    // mismas letras en otra caja: GitHub no distingue, se normaliza al canónico
+    const low=mk(engine,{repo:'ineaki/GATETES'})();if(orq) assert.equal(low.repo,'Ineaki/gatetes',engine);
+    // vacío, espacios, null o ausente: repo por defecto
+    for(const repo of ['','  ',null,undefined]) { const s=mk(engine,{repo})();if(orq) assert.equal(s.repo,'Ineaki/gatetes',`${engine} ${repo}`); }
+    // otro propietario (falta la "e"), otro repo o el vault: rechazados
+    const why=orq?/no local clone/:/repo must be Ineaki\/gatetes \(got/;
+    for(const repo of ['inaki/gatetes','Ineaki/otro','Ineaki/gatetes-agent-vault','Ineaki/gatetes/x']) assert.throws(mk(engine,{repo}),why,`${engine} ${repo}`);
+    assert.throws(mk(engine,{repo:42}),/string/,engine);
+  }
+});
 test('mirror scrubbing removes credentials and local home paths',()=>{
   const text=scrub(`token ghp_${'a'.repeat(30)} at ${os.homedir()}\\vault and "delegate": "${'f'.repeat(40)}"`);
   assert.ok(!text.includes('ghp_'));assert.ok(!text.includes(os.homedir()));assert.ok(!text.includes('f'.repeat(40)));

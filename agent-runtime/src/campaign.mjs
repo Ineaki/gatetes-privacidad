@@ -5,11 +5,12 @@ import { Store } from './store.mjs';
 import { validateSpec,git } from './workspace.mjs';
 import { runOne } from './worker.mjs';
 import { syncRemote } from './remote.mjs';
+import { parseJsonText } from './json.mjs';
 
 const c=config(),store=new Store(c),stateFile=path.join(c.vault,'campaign.json');
 const remote=process.env.AGENT_REMOTE;
 const save=s=>{const tmp=stateFile+'.tmp';fs.writeFileSync(tmp,JSON.stringify(s,null,2),{mode:0o600,flush:true});fs.renameSync(tmp,stateFile);};
-const read=()=>JSON.parse(fs.readFileSync(stateFile,'utf8'));
+const read=()=>parseJsonText(fs.readFileSync(stateFile,'utf8'),'campaign state');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 const record=(kind,body)=>store.event(null,kind,body);
 
@@ -71,7 +72,7 @@ try {
       if(old.status==='running') throw Error('Campaign is running; block it before re-seeding');
       fs.renameSync(stateFile,path.join(c.vault,`campaign.${old.id}.${Date.now()}.json`));
     }
-    const seed=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+    const seed=parseJsonText(fs.readFileSync(process.argv[3],'utf8'),'campaign seed');
     if(!Array.isArray(seed.jobs)||seed.jobs.length<1||seed.jobs.length>8) throw Error('Seed must contain 1-8 jobs');
     git(c.repo,['fetch','-q','origin','main',...seed.jobs.map(j=>`+refs/pull/${j.pr}/head:refs/remotes/pr/${j.pr}`)]);
     const jobs=seed.jobs.map(j=>{

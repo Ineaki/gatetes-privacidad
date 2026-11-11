@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { validateSpec } from './workspace.mjs';
 import { scrub, containsSecret } from './guard.mjs';
-import { routeEngine, parseOrqInstruction } from './orq.mjs';
+import { routeEngine, parseOrqInstruction, canonicalRepo, blankRepo } from './orq.mjs';
 import { detectDeterministic } from './deterministic.mjs';
 
 const safeJson = v => scrub(JSON.stringify(v,null,2))+'\n';
@@ -28,7 +28,8 @@ export function parseInstruction(value,c,resolveCommit,resolveFor=commitResolver
   if(typeof t.goal!=='string'||t.goal.trim().length<20||t.goal.length>1000) throw Error('goal must be 20-1000 characters');
   if(!Array.isArray(t.files)||t.files.length<1||t.files.length>4) throw Error('files must list 1-4 explicit paths');
   if(!Array.isArray(t.acceptance)||t.acceptance.length<1||t.acceptance.length>5) throw Error('acceptance must list 1-5 criteria');
-  if(t.repo!==undefined&&t.repo!==c.repoName) throw Error(`repo must be ${c.repoName}`);
+  // Ollama trabaja solo sobre el clon local de c.repo: cualquier otro repo (p. ej. el vault) no tiene copia aquí.
+  if(!blankRepo(t.repo)&&canonicalRepo(t.repo,c.repoName)!==c.repoName) throw Error(`repo must be ${c.repoName} (got "${String(t.repo).slice(0,80)}"); Ollama only works on ${c.repoName}`);
   const tests=[],criteria=[],acceptance=[];
   for(const a of t.acceptance) {
     if(a&&typeof a==='object'&&typeof a.path==='string') {acceptance.push({path:a.path,contains:a.contains});continue;}
