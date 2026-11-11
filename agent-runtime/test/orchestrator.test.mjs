@@ -95,12 +95,12 @@ test('remote contract routes engines: checker/ollama local, implementer+claude a
   assert.throws(bad({profile:'implementer',engine:'codex'}),/runs on engine "claude"/);
   assert.throws(bad({profile:'reviewer',engine:'claude'}),/"codex" or "ollama"/);
   assert.throws(bad({engine:'gpt'}),/not accepted/);
-  assert.throws(bad({profile:'implementer',engine:'claude',repo:'Ineaki/otro'}),/no local clone/);
+  assert.throws(bad({profile:'implementer',engine:'claude',repo:'Ineaki/otro'}),/not allowed/);
   assert.throws(bad({profile:'implementer',engine:'claude',files:['.env']}),/Forbidden/);
   assert.throws(bad({profile:'nadie'}),/not accepted/);
   assert.throws(bad({acceptance:[]}),/acceptance/);
   assert.throws(bad({files:['a','b','c','d','e']}),/1-4/);
-  assert.throws(bad({repo:'Ineaki/otro'}),/repo must be/);
+  assert.throws(bad({repo:'Ineaki/otro'}),/not allowed/);
   assert.throws(()=>parseInstruction({...base,key:'../x'},c,resolve),/key/);
 });
 test('mirror scrubbing removes credentials and local home paths',()=>{
