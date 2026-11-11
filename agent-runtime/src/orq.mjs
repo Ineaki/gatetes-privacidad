@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { runTests } from './review.mjs';
 import { scrub, containsSecret } from './guard.mjs';
+import { checkRepo, repoClones } from './repos.mjs';
 
 export const ORQ_ENGINES = ['claude', 'codex'];
 const PROTECTED = new Set(['main', 'master']);
@@ -27,10 +28,7 @@ export function routeEngine(profile, engine) {
 
 // Ajustes de orq. Rutas por variables de entorno para no tocar settings.json del vault.
 export function orqSettings(c) {
-  const repos = {};
-  if (c.repoName) repos[c.repoName] = c.repo;
-  if (process.env.AGENT_REMOTE) repos['Ineaki/gatetes-agent-vault'] = process.env.AGENT_REMOTE;
-  if (process.env.AGENT_ORQ_REPOS) Object.assign(repos, JSON.parse(process.env.AGENT_ORQ_REPOS));
+  const repos = repoClones(c);
   return {
     script: process.env.AGENT_ORQ_SCRIPT ?? path.join(process.env.USERPROFILE ?? '', 'orquestacion-ia', 'scripts', 'orq.ps1'),
     pwsh: process.env.AGENT_PWSH ?? 'pwsh',
@@ -74,7 +72,7 @@ const cleanFile = p => {
 // Valida un encargo de Fox para claude/codex y lo deja fijado al commit exacto de la rama o PR.
 export function parseOrqInstruction(value, c, engine, resolveFor) {
   const t = value.task, o = orqSettings(c);
-  const repo = t.repo ?? c.repoName;
+  const repo = checkRepo(c, t.repo === undefined || t.repo === null || t.repo === '' ? c.repoName : t.repo);
   if (!o.repos[repo]) throw Error(`repo "${repo}" has no local clone for orq (known: ${Object.keys(o.repos).join(', ')})`);
   if (typeof t.goal !== 'string' || t.goal.trim().length < 20 || t.goal.length > 4000) throw Error('goal must be 20-4000 characters');
   if (!Array.isArray(t.files) || t.files.length < 1 || t.files.length > 10) throw Error('files must list 1-10 explicit paths');

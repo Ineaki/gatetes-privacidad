@@ -26,7 +26,8 @@ receipt updated with `state`, `verdict`, `reason` and `report` until the task en
 
 Rejected with an explicit reason in the receipt: any `engine` other than
 `ollama`, profiles `implementer`/`coder`, more than 4 files, no acceptance,
-another repo, a key that differs from the file name, credential-like content,
+a repo outside the Ineaki allowlist or without a local clone (see README,
+"Allowed repositories"), a key that differs from the file name, credential-like content,
 or a microtask identical (same goal, profile, files and file hashes) to one
 already submitted. Work is pinned to the PR head / branch / `origin/main`
 commit fetched at acceptance and runs in its own worktree; nothing is pushed
